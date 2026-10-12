@@ -1,0 +1,510 @@
+{
+ "source": "JPL Horizons API (https://ssd.jpl.nasa.gov/api/horizons.api), osculating elements at J2000, ecliptic J2000 frame",
+ "fetchedAt": "2026-10-12T04:04:28.300Z",
+ "moons": [
+  {
+   "id": "phobos",
+   "name": "Phobos",
+   "parent": "mars",
+   "horizonsId": 401,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 9378.610328,
+    "e": 0.014698419,
+    "iDeg": 26.056702,
+    "omDeg": 84.815142,
+    "wDeg": 342.78486,
+    "maDeg": 189.82243,
+    "nDegPerDay": 1127.961921
+   },
+   "radiusKm": 11.1,
+   "gmKm3S2": 0.0007
+  },
+  {
+   "id": "deimos",
+   "name": "Deimos",
+   "parent": "mars",
+   "horizonsId": 402,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 23458.18251,
+    "e": 0.00032996249,
+    "iDeg": 27.56937,
+    "omDeg": 83.669267,
+    "wDeg": 211.89479,
+    "maDeg": 5.0939508,
+    "nDegPerDay": 285.1416324
+   },
+   "radiusKm": 6.2,
+   "gmKm3S2": 0.0001
+  },
+  {
+   "id": "io",
+   "name": "Io",
+   "parent": "jupiter",
+   "horizonsId": 501,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 422036.4315,
+    "e": 0.0047156889,
+    "iDeg": 2.2126178,
+    "omDeg": 336.85245,
+    "wDeg": 66.164885,
+    "maDeg": 335.15321,
+    "nDegPerDay": 203.2295711
+   },
+   "radiusKm": 1821.49,
+   "gmKm3S2": 5959.9155
+  },
+  {
+   "id": "europa",
+   "name": "Europa",
+   "parent": "jupiter",
+   "horizonsId": 502,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 671248.4977,
+    "e": 0.0098128236,
+    "iDeg": 1.7909712,
+    "omDeg": 332.62873,
+    "wDeg": 254.64714,
+    "maDeg": 345.41104,
+    "nDegPerDay": 101.3169478
+   },
+   "radiusKm": 1560.8,
+   "gmKm3S2": 3202.7121
+  },
+  {
+   "id": "ganymede",
+   "name": "Ganymede",
+   "parent": "jupiter",
+   "horizonsId": 503,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 1070497.481,
+    "e": 0.0014572153,
+    "iDeg": 2.214148,
+    "omDeg": 343.17285,
+    "wDeg": 319.80781,
+    "maDeg": 277.04877,
+    "nDegPerDay": 50.30834976
+   },
+   "radiusKm": 2631.2,
+   "gmKm3S2": 9887.8328
+  },
+  {
+   "id": "callisto",
+   "name": "Callisto",
+   "parent": "jupiter",
+   "horizonsId": 504,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 1882772.954,
+    "e": 0.0074394346,
+    "iDeg": 2.0169162,
+    "omDeg": 337.94261,
+    "wDeg": 16.126895,
+    "maDeg": 85.118889,
+    "nDegPerDay": 21.56835273
+   },
+   "radiusKm": 2410.3,
+   "gmKm3S2": 7179.2834
+  },
+  {
+   "id": "amalthea",
+   "name": "Amalthea",
+   "parent": "jupiter",
+   "horizonsId": 505,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 181996.734,
+    "e": 0.0061314967,
+    "iDeg": 2.4420891,
+    "omDeg": 330.41066,
+    "wDeg": 105.11758,
+    "maDeg": 336.26641,
+    "nDegPerDay": 717.6392887
+   },
+   "radiusKm": 83.5,
+   "gmKm3S2": 0.1646
+  },
+  {
+   "id": "himalia",
+   "name": "Himalia",
+   "parent": "jupiter",
+   "horizonsId": 506,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 11372112.63,
+    "e": 0.16619997,
+    "iDeg": 30.246902,
+    "omDeg": 64.192183,
+    "wDeg": 321.13987,
+    "maDeg": 78.242195,
+    "nDegPerDay": 1.452913872
+   },
+   "radiusKm": 85,
+   "gmKm3S2": 0.151552
+  },
+  {
+   "id": "mimas",
+   "name": "Mimas",
+   "parent": "saturn",
+   "horizonsId": 601,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 186036.8224,
+    "e": 0.021756348,
+    "iDeg": 27.002658,
+    "omDeg": 172.05694,
+    "wDeg": 108.72538,
+    "maDeg": 37.398058,
+    "nDegPerDay": 379.9586594
+   },
+   "radiusKm": 198.8,
+   "gmKm3S2": 2.503489
+  },
+  {
+   "id": "enceladus",
+   "name": "Enceladus",
+   "parent": "saturn",
+   "horizonsId": 602,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 238419.8688,
+    "e": 0.0063515974,
+    "iDeg": 28.052023,
+    "omDeg": 169.5066,
+    "wDeg": 135.48303,
+    "maDeg": 6.9533985,
+    "nDegPerDay": 261.8913027
+   },
+   "radiusKm": 252.3,
+   "gmKm3S2": 7.210367
+  },
+  {
+   "id": "tethys",
+   "name": "Tethys",
+   "parent": "saturn",
+   "horizonsId": 603,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 294980.2531,
+    "e": 0.00096987788,
+    "iDeg": 27.220729,
+    "omDeg": 167.99773,
+    "wDeg": 158.05707,
+    "maDeg": 350.38282,
+    "nDegPerDay": 190.3029505
+   },
+   "radiusKm": 536.3,
+   "gmKm3S2": 41.21
+  },
+  {
+   "id": "dione",
+   "name": "Dione",
+   "parent": "saturn",
+   "horizonsId": 604,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 377652.1785,
+    "e": 0.0029283601,
+    "iDeg": 28.041395,
+    "omDeg": 169.4702,
+    "wDeg": 164.9354,
+    "maDeg": 332.05656,
+    "nDegPerDay": 131.370281
+   },
+   "radiusKm": 562.5,
+   "gmKm3S2": 73.116
+  },
+  {
+   "id": "rhea",
+   "name": "Rhea",
+   "parent": "saturn",
+   "horizonsId": 605,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 527225.2527,
+    "e": 0.00080021497,
+    "iDeg": 28.241417,
+    "omDeg": 168.9842,
+    "wDeg": 165.78182,
+    "maDeg": 206.90211,
+    "nDegPerDay": 79.6418386
+   },
+   "radiusKm": 764.5,
+   "gmKm3S2": 153.94
+  },
+  {
+   "id": "titan",
+   "name": "Titan",
+   "parent": "saturn",
+   "horizonsId": 606,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 1221934.801,
+    "e": 0.028600663,
+    "iDeg": 27.718339,
+    "omDeg": 169.23916,
+    "wDeg": 164.40913,
+    "maDeg": 163.4362,
+    "nDegPerDay": 22.57428703
+   },
+   "radiusKm": 2575.5,
+   "gmKm3S2": 8978.14
+  },
+  {
+   "id": "hyperion",
+   "name": "Hyperion",
+   "parent": "saturn",
+   "horizonsId": 607,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 1485060.667,
+    "e": 0.12673086,
+    "iDeg": 27.209029,
+    "omDeg": 168.30501,
+    "wDeg": 188.69327,
+    "maDeg": 70.603864,
+    "nDegPerDay": 16.84683843
+   },
+   "radiusKm": 133,
+   "gmKm3S2": 0.3705
+  },
+  {
+   "id": "iapetus",
+   "name": "Iapetus",
+   "parent": "saturn",
+   "horizonsId": 608,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 3562566.557,
+    "e": 0.027862492,
+    "iDeg": 17.238204,
+    "omDeg": 139.69176,
+    "wDeg": 229.6584,
+    "maDeg": 208.01759,
+    "nDegPerDay": 4.534098093
+   },
+   "radiusKm": 734.5,
+   "gmKm3S2": 120.52
+  },
+  {
+   "id": "phoebe",
+   "name": "Phoebe",
+   "parent": "saturn",
+   "horizonsId": 609,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 12943784.54,
+    "e": 0.1654052,
+    "iDeg": 173.25871,
+    "omDeg": 263.19901,
+    "wDeg": 353.73003,
+    "maDeg": 58.64904,
+    "nDegPerDay": 0.65470068
+   },
+   "radiusKm": 106.6,
+   "gmKm3S2": 0.5548
+  },
+  {
+   "id": "miranda",
+   "name": "Miranda",
+   "parent": "uranus",
+   "horizonsId": 705,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 129871.7551,
+    "e": 0.0015097986,
+    "iDeg": 97.254154,
+    "omDeg": 172.08758,
+    "wDeg": 261.02213,
+    "maDeg": 62.061891,
+    "nDegPerDay": 254.5961656
+   },
+   "radiusKm": 235.8,
+   "gmKm3S2": 4.3
+  },
+  {
+   "id": "ariel",
+   "name": "Ariel",
+   "parent": "uranus",
+   "horizonsId": 701,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 190941.347,
+    "e": 0.0015208123,
+    "iDeg": 97.719319,
+    "omDeg": 167.64555,
+    "wDeg": 45.356742,
+    "maDeg": 152.79437,
+    "nDegPerDay": 142.8160191
+   },
+   "radiusKm": 578.9,
+   "gmKm3S2": 83.43
+  },
+  {
+   "id": "umbriel",
+   "name": "Umbriel",
+   "parent": "uranus",
+   "horizonsId": 702,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 266012.1887,
+    "e": 0.0041701651,
+    "iDeg": 97.666067,
+    "omDeg": 167.63818,
+    "wDeg": 334.95167,
+    "maDeg": 271.22338,
+    "nDegPerDay": 86.85096838
+   },
+   "radiusKm": 584.7,
+   "gmKm3S2": 85.4
+  },
+  {
+   "id": "titania",
+   "name": "Titania",
+   "parent": "uranus",
+   "horizonsId": 703,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 436292.6756,
+    "e": 0.0024790003,
+    "iDeg": 97.818368,
+    "omDeg": 167.61781,
+    "wDeg": 202.11677,
+    "maDeg": 74.416776,
+    "nDegPerDay": 41.34902144
+   },
+   "radiusKm": 788.9,
+   "gmKm3S2": 222.8
+  },
+  {
+   "id": "oberon",
+   "name": "Oberon",
+   "parent": "uranus",
+   "horizonsId": 704,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 583549.9441,
+    "e": 0.00055232448,
+    "iDeg": 97.875853,
+    "omDeg": 167.75553,
+    "wDeg": 254.00673,
+    "maDeg": 93.496291,
+    "nDegPerDay": 26.73097192
+   },
+   "radiusKm": 761.4,
+   "gmKm3S2": 205.34
+  },
+  {
+   "id": "triton",
+   "name": "Triton",
+   "parent": "neptune",
+   "horizonsId": 801,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 354766.0619,
+    "e": 0.00014610791,
+    "iDeg": 130.26141,
+    "omDeg": 215.85911,
+    "wDeg": 91.171381,
+    "maDeg": 343.46067,
+    "nDegPerDay": 61.25493557
+   },
+   "radiusKm": 1352.6,
+   "gmKm3S2": 1428.495
+  },
+  {
+   "id": "nereid",
+   "name": "Nereid",
+   "parent": "neptune",
+   "horizonsId": 802,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 5511154.829,
+    "e": 0.75065094,
+    "iDeg": 5.0605532,
+    "omDeg": 319.59122,
+    "wDeg": 297.00205,
+    "maDeg": 215.62555,
+    "nDegPerDay": 1.000333682
+   },
+   "radiusKm": 170,
+   "gmKm3S2": null
+  },
+  {
+   "id": "proteus",
+   "name": "Proteus",
+   "parent": "neptune",
+   "horizonsId": 808,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 117674.7976,
+    "e": 0.00049493035,
+    "iDeg": 28.991637,
+    "omDeg": 48.279502,
+    "wDeg": 326.80365,
+    "maDeg": 283.62409,
+    "nDegPerDay": 320.6149006
+   },
+   "radiusKm": 208,
+   "gmKm3S2": 2.58
+  },
+  {
+   "id": "charon",
+   "name": "Charon",
+   "parent": "pluto",
+   "horizonsId": 901,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 19595.76204,
+    "e": 0.00016106728,
+    "iDeg": 112.89081,
+    "omDeg": 227.39169,
+    "wDeg": 172.5855,
+    "maDeg": 148.66513,
+    "nDegPerDay": 56.36254356
+   },
+   "radiusKm": 606,
+   "gmKm3S2": 106.1
+  },
+  {
+   "id": "nix",
+   "name": "Nix",
+   "parent": "pluto",
+   "horizonsId": 902,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 49206.33853,
+    "e": 0.013460183,
+    "iDeg": 112.88867,
+    "omDeg": 227.41587,
+    "wDeg": 134.8491,
+    "maDeg": 334.82549,
+    "nDegPerDay": 14.16452605
+   },
+   "radiusKm": 18,
+   "gmKm3S2": 0.001496
+  },
+  {
+   "id": "hydra",
+   "name": "Hydra",
+   "parent": "pluto",
+   "horizonsId": 903,
+   "epochJd": 2451545,
+   "elements": {
+    "aKm": 65354.72219,
+    "e": 0.015429138,
+    "iDeg": 112.70418,
+    "omDeg": 227.6192,
+    "wDeg": 266.05792,
+    "maDeg": 344.32754,
+    "nDegPerDay": 9.253751262
+   },
+   "radiusKm": 18.5,
+   "gmKm3S2": 0.00201
+  }
+ ]
+}
