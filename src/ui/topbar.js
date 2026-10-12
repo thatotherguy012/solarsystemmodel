@@ -135,7 +135,9 @@ export function initTopbar(app) {
     if (!a) return;
     closeMenus();
     if (a === 'planner') app.openPlanner();
+    else if (a === 'windows') app.openPlanner({ tab: 'windows' });
     else if (a === 'events') app.openEvents();
+    else if (a === 'report') app.openReport?.();
   });
 
   const renderToggles = () => {

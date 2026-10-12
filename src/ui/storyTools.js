@@ -3,8 +3,8 @@
 //   src/sim/milestones.js + src/ui/timelineMilestones.js + src/ui/milestonesSection.js (Events dialog)
 //   src/sim/report.js + src/ui/modals/report.js
 //   src/sim/lightlag.js + src/scene/lightlag.js
-// The controls add themselves to the existing DOM (a top-bar button after "Events", a chip group in the view
-// toolbar, a toggle next to the timeline's event buttons), so the other UI modules need no changes.
+// The controls add themselves to the existing DOM (a chip group in the view toolbar, a toggle next to the
+// timeline's event buttons); the situation report is an item of the Tools menu.
 import '../styles-story-tools.css';
 import { store } from '../sim/store.js';
 import { positionOf, nameOf } from '../sim/custom.js';
@@ -34,6 +34,8 @@ export function initStoryTools(app) {
 // ------------------------------------------------------------------ situation report entry
 
 function addReportButton(app) {
+  // v3 layout: the entry is a static item of the Tools menu (index.html, handled by topbar.js)
+  if (document.querySelector('#tools-menu [data-act=report]')) return;
   const btn = document.createElement('button');
   btn.id = 'btn-report';
   btn.className = 'btn';
@@ -86,8 +88,11 @@ function initLightLag(app) {
     <button class="chip" type="button" data-ll="main" title="Light-lag view: show where the selected object's sensors see every other object now — each ghost marks a position the light left minutes or hours ago">Light-lag view</button>
     <button class="chip" type="button" data-ll="planets" title="Also show light-lag ghosts of the eight planets">+ planets</button>
     <span class="ll-caption" data-ll="caption"></span>`;
+  // v3 layout: in the view toolbar row, before the "Following: X" pill (the tip strip wraps below)
   const overlay = canvasHost.parentElement?.querySelector('.overlay-top');
-  (overlay ?? canvasHost.parentElement ?? document.body).appendChild(wrap);
+  const pill = overlay?.querySelector('#follow-pill');
+  if (pill) pill.before(wrap);
+  else (overlay ?? canvasHost.parentElement ?? document.body).appendChild(wrap);
   const mainChip = wrap.querySelector('[data-ll=main]');
   const planetsChip = wrap.querySelector('[data-ll=planets]');
   const caption = wrap.querySelector('[data-ll=caption]');
@@ -133,8 +138,8 @@ export function storyToolsHelpHtml() {
   return `<section>
         <h3>Story tools</h3>
         <ul>
-          <li><b>Auto milestones</b>: departures, arrivals, flips (turnover of brachistochrone legs), flybys, close approaches inside two sphere-of-influence radii and impacts are derived from every route and drawn as hollow ticks in the object's colour below the story events on the timeline (hover for details, click to jump). The <b>Auto milestones</b> button next to the event buttons hides them. They are listed under <b>Derived milestones</b> in the Events dialog; they update when routes change and are never saved.</li>
-          <li><b>Situation report…</b> (top bar) writes a Markdown report for any date: each object's status in plain language (“En route Earth → Mars, arrives … (in 4.2 d), 612 km/s”), its position, distance from the Sun and Earth and signal delay to Earth, a table of distances and one-way signal delays between everything included, and the milestones and story events coming up. Copy it or download it as a <code>.md</code> file.</li>
+          <li><b>Auto milestones</b>: departures, arrivals (intercepts with their closing speed), flips (turnover of brachistochrone legs at the midpoint, of torch legs at the computed flip), flybys, close approaches inside two sphere-of-influence radii, impacts, course changes and engine cuts are derived from every route and drawn as hollow ticks in the object's colour below the story events on the timeline (hover for details, click to jump). The <b>Auto milestones</b> button next to the timeline's event buttons hides them. They are listed under <b>Derived milestones</b> in the Events dialog; they update when routes change and are never saved.</li>
+          <li><b>Tools ▾ → Situation report…</b> writes a Markdown report for any date: each object's status in plain language (“En route Earth → Mars, arrives … (in 4.2 d), 612 km/s”), its position, distance from the Sun and Earth and signal delay to Earth, a table of distances and one-way signal delays between everything included, and the milestones and story events coming up. Copy it or download it as a <code>.md</code> file.</li>
           <li><b>Light-lag view</b> (chip above the view): select an observer and every other visible object gets a dashed ghost marker at its <i>retarded</i> position — where it was when the light now reaching the observer left it (τ = |r(t − τ) − r<sub>obs</sub>(t)| / c) — joined to its true position and labelled “seen 4 min 12 s ago”; <b>+ planets</b> adds the planets. This is what the observer's telescopes and sensors show right now, and the picture any hard-SF commander has to fight with: the enemy is never where you see it.</li>
         </ul>
       </section>`;

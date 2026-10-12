@@ -6,9 +6,10 @@ import { vlen, vsub } from '../astro/vec3.js';
 import { formatJd } from '../astro/time.js';
 import { getBody, allBodies, hasBody } from './ephemeris.js';
 import {
-  positionOf, velocityOf, existsAt, nameOf, routePhase, legData, stopFrameBody, orbitMotionElements,
+  positionOf, velocityOf, existsAt, nameOf, routePhase, legData, stopFrameBody, orbitMotionElements, terminalDrift, legSpec,
 } from './custom.js';
 import { computeMilestones, stopName, legFlipJd } from './milestones.js';
+import { thrustSummary } from './legPhysics.js';
 import { formatAge } from './lightlag.js';
 
 /**
@@ -174,17 +175,34 @@ function routeStatus(obj, jd, ctx, speedUnit) {
   }
   if (ph.kind === 'arrived') {
     const last = stops[stops.length - 1];
+    if (terminalDrift(obj, ctx)) {
+      // engines cut, or flew through an intercept target: coasting on
+      const v = vlen(velocityOf(obj.id, jd, ctx));
+      const passed = last.ref && stops.length > 1 && legSpec(m, stops.length - 2).mode === 'intercept'
+        ? `; intercepted ${placeName(last, ctx)} ${dateTime(last.arriveJd)} (${relative(last.arriveJd - jd)})` : '';
+      return `Engines off, drifting at ${speedText(v, speedUnit)}${passed}`;
+    }
     return `Parked at ${placeName(last, ctx)} (arrived ${dateTime(last.arriveJd)}, ${relative(last.arriveJd - jd)})`;
   }
   // in transit
   const leg = legData(obj, ph.leg, ctx, 0);
-  const from = placeName(stops[ph.leg], ctx), to = placeName(stops[ph.leg + 1], ctx);
   const v = vlen(velocityOf(obj.id, jd, ctx));
+  if (leg.profile === 'drift') return `Engines off, drifting at ${speedText(v, speedUnit)}`;
+  // a leg cut short by a later course change is shown as it was flown then: toward its original destination
+  const from = placeName(stops[ph.leg], ctx), to = placeName(leg.toStop, ctx);
   const flyby = leg.arrFlyby ? ' (flyby)' : '';
-  let s = `En route ${from} → ${to}${flyby}, arrives ${dateTime(leg.t1)} (${relative(leg.t1 - jd)}), ${speedText(v, speedUnit)}`;
+  const ts = leg.profile === 'thrust' ? thrustSummary(leg) : null;
+  const arrive = ts && !ts.failed ? ts.arriveJd : leg.t1;
+  const intercept = leg.mode === 'intercept' ? ' (intercept)' : '';
+  let s = `En route ${from} → ${to}${flyby}${intercept}, arrives ${dateTime(arrive)} (${relative(arrive - jd)}), ${speedText(v, speedUnit)}`;
+  if (ts && !ts.failed && ts.mode === 'intercept') {
+    const g = ts.accelG;
+    s += `; accelerating at ${g >= 0.01 ? g.toFixed(2) : g.toPrecision(2)} g, closing speed at arrival ${speedText(ts.closingSpeed, speedUnit)}`;
+    return s;
+  }
   const flip = legFlipJd(leg);
   if (flip != null) {
-    const g = auDay2ToMS2(leg.accel) / G0_M_S2;
+    const g = ts && !ts.failed ? ts.accelG : auDay2ToMS2(leg.accel) / G0_M_S2;
     const gTxt = g >= 0.01 ? g.toFixed(2) : g.toPrecision(2);
     s += jd < flip ? `; accelerating at ${gTxt} g, flip ${relative(flip - jd)}` : `; decelerating at ${gTxt} g`;
   } else if (leg.profile === 'ballistic' && !leg.fallback) {
@@ -207,7 +225,7 @@ export function parentsOf(obj, jd, ctx) {
   else if (m.kind === 'lagrange') { add(m.primary); add(m.secondary); }
   else if (m.kind === 'route') {
     const ph = routePhase(m, jd);
-    if (ph.kind === 'transit') { add(m.stops[ph.leg]?.ref); add(m.stops[ph.leg + 1]?.ref); }
+    if (ph.kind === 'transit') { add(m.stops[ph.leg]?.ref); add((m.stops[ph.leg + 1]?.aborted ?? m.stops[ph.leg + 1])?.ref); }
     else if (ph.stop != null) { add(m.stops[ph.stop]?.ref); if (ph.kind !== 'arrived') add(m.stops[ph.stop + 1]?.ref); }
   }
   return out;

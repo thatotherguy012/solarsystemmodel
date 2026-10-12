@@ -15,7 +15,7 @@ No installation, no Node.js, no server:
 - **any system:** double-click **`standalone/SolarSystem.html`**.
 
 Either one opens the app in your default browser straight from disk. `standalone/SolarSystem.html` is a single
-self-contained file (about 1.4 MB, most of it the asteroid-belt data) with all code, styles and data inside it, so it works offline and you can copy
+self-contained file (about 1.5 MB, a third of it the asteroid-belt data) with all code, styles and data inside it, so it works offline and you can copy
 it anywhere.
 
 You don't need to clone the repository to get it. On the GitHub repository page, either use **Code → Download ZIP**

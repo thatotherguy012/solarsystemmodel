@@ -1,13 +1,15 @@
 // Automatic route milestones, derived from every custom object's route and its computed leg physics:
 // departures, arrivals, flips (turnover of constant-thrust legs), flybys, close planetary approaches (inside two
-// sphere-of-influence radii) and impacts. Milestones are derived data: they are recomputed (debounced) whenever the
+// sphere-of-influence radii), impacts, course changes and engine cuts (v3 command mode: torch legs flip at their
+// computed flip time, intercepts arrive at a closing speed, waypoints record course changes, drift = engines off).
+// Milestones are derived data: they are recomputed (debounced) whenever the
 // scenario or a background N-body result changes and are never saved to the scenario.
 import { AU_KM, auDayToKmS, auDay2ToMS2, G0_M_S2 } from '../astro/constants.js';
 import { vlen, vsub } from '../astro/vec3.js';
 import { store } from './store.js';
 import { onTrajectoryUpdate } from './trajectory.js';
-import { legData, nameOf, positionOf } from './custom.js';
-import { ballisticSummary, routeFlybys } from './legPhysics.js';
+import { legData, legSpec, legArrival, nameOf, nameOfStop, positionOf, isWaypoint, isHold, terminalDrift, driftResult } from './custom.js';
+import { ballisticSummary, routeFlybys, thrustSummary } from './legPhysics.js';
 import { getBody, getPerturbers } from './ephemeris.js';
 
 /** Milestone kinds with display labels (order = typical order along a leg). */
@@ -17,6 +19,8 @@ export const MILESTONE_KINDS = {
   approach: 'Close approach',
   impact: 'Impact',
   flyby: 'Flyby',
+  course: 'Course change',
+  engines: 'Engines off',
   arrive: 'Arrival',
 };
 
@@ -51,17 +55,23 @@ function dist(au) {
   return `${(km / 1e6).toFixed(km < 1e7 ? 2 : 1)} M km`;
 }
 
-/** Display name of a route stop (body / object name, or the fixed point's coordinates). */
+/** Display name of a route stop (body / object name, course change, start, or the fixed point's coordinates). */
 export function stopName(stop, ctx) {
   if (!stop) return '?';
   if (stop.ref) return nameOf(stop.ref, ctx);
+  if (isWaypoint(stop)) return 'the course-change point';
+  if (isHold(stop)) return nameOfStop(stop, ctx);
   const f = (x) => (Number(x) || 0).toFixed(2);
   return `waypoint (${f(stop.x)}, ${f(stop.y)}, ${f(stop.z)} AU)`;
 }
 
-/** Time of the flip of a constant-thrust leg: an explicit `flipJd` when the leg model provides one, else the midpoint. */
+/**
+ * Time of the flip of a constant-thrust leg: an explicit `flipJd` when the leg model provides one (torch rendezvous
+ * legs: the solution's flip), else the midpoint of a brachistochrone leg. Torch intercepts never flip.
+ */
 export function legFlipJd(leg) {
   if (Number.isFinite(leg?.flipJd)) return leg.flipJd;
+  if (leg?.profile === 'thrust') { const t = thrustSummary(leg); return t && !t.failed && Number.isFinite(t.flipJd) ? t.flipJd : null; }
   if (leg?.profile === 'brachistochrone' && leg.T > 0) return leg.t0 + leg.T / 2;
   return null;
 }
@@ -77,13 +87,13 @@ const approachCache = new WeakMap();
  * Uses a private evaluation context so the shared position memo of the app is not churned.
  * @returns {{id:string, jd:number, distAu:number, soiAu:number, radiusAu:number}[]}
  */
-function sampledApproaches(obj, leg, ctx) {
+function sampledApproaches(obj, leg, ctx, tEnd = leg.t1) {
   const hit = approachCache.get(leg);
-  if (hit) return hit;
+  if (hit && hit.tEnd === tEnd) return hit.list;
   const pctx = { byId: ctx.byId, version: ctx.version, errors: new Map(), posCache: new Map() };
   const exclude = new Set(leg.endpointIds || []);
   const planets = getPerturbers().filter((p) => !exclude.has(p.id));
-  const t0 = leg.t0, t1 = leg.t1;
+  const t0 = leg.t0, t1 = tEnd;
   const pos = (t) => positionOf(obj.id, Math.min(t1, Math.max(t0, t)), pctx) ?? [0, 0, 0];
   const n = APPROACH_SAMPLES;
   const ts = [], ps = [];
@@ -109,7 +119,7 @@ function sampledApproaches(obj, leg, ctx) {
     else out.push({ id: p.id, jd: ts[kMin], distAu: dMin, soiAu: p.soiAu, radiusAu: p.radiusAu });
   }
   out.sort((x, y) => x.distAu - y.distAu);
-  approachCache.set(leg, out);
+  approachCache.set(leg, { tEnd, list: out });
   return out;
 }
 
@@ -144,41 +154,49 @@ function routeMilestones(o, ctx, out) {
     if (!Number.isFinite(jd)) return;
     out.push({ ...base, id: `${o.id}:${kind}:${leg}${extra.bodyId ? `:${extra.bodyId}` : ''}`, kind, leg, jd, title, detail, bodyId: null, ...extra });
   };
-  const flybys = m.profile === 'ballistic' ? new Map(routeFlybys(o, ctx).map((f) => [f.stopIndex, f])) : new Map();
-  for (let i = 0; i < m.stops.length - 1; i++) {
+  const flybys = new Map(routeFlybys(o, ctx).map((f) => [f.stopIndex, f]));
+  const n = m.stops.length;
+  for (let i = 0; i < n - 1; i++) {
     const A = m.stops[i], B = m.stops[i + 1];
     if (A.departJd == null || B.arriveJd == null || !(B.arriveJd > A.departJd)) continue;
     const leg = legData(o, i, ctx, 0);
-    const from = stopName(A, ctx), to = stopName(B, ctx);
+    const from = stopName(A, ctx), to = stopName(leg.toStop, ctx); // a cut leg keeps its original destination
+    const ts = leg.profile === 'thrust' ? thrustSummary(leg) : null;
+    const tArr = leg.cut ? leg.tEnd : ts && !ts.failed ? ts.arriveJd : leg.t1; // when the leg actually ends
+    const T = tArr - leg.t0;
     const prof = leg.profile === 'brachistochrone' && leg.accel > 0 ? `brachistochrone ${fmtGShort(gOf(leg.accel))}`
-      : leg.fallback ? 'linear (no ballistic solution)' : leg.profile;
+      : ts && !ts.failed ? `torch ${fmtGShort(ts.accelG)}${leg.mode === 'intercept' ? ' intercept' : ''}`
+        : leg.fallback ? 'linear (no solution)' : leg.profile === 'drift' ? 'engines off' : leg.mode === 'intercept' ? `${leg.profile} intercept` : leg.profile;
 
     const sum = leg.profile === 'ballistic' && leg.ballistic ? ballisticSummary(leg, ctx) : null;
-    if (!leg.depFlyby) {
+    // departures (not after a course change or into a drift: those have their own milestones)
+    if (!leg.depFlyby && !isWaypoint(A) && leg.profile !== 'drift') {
       push('depart', i, leg.t0, `${o.name} departs ${from}`,
-        `for ${to} · ${prof} · ${days(leg.T)} · ${dist(leg.D)}${sum ? ` · v∞ ${kms(sum.vinfDep)}, burn ${kms(sum.dep.dv)}` : ''}`, { bodyId: A.ref ?? null });
+        `for ${to} · ${prof} · ${days(leg.cut ? leg.t1 - leg.t0 : T)} · ${dist(leg.D)}${sum ? ` · v∞ ${kms(sum.vinfDep)}, burn ${kms(sum.dep.dv)}` : ''}`, { bodyId: A.ref ?? null });
     }
 
     const flip = legFlipJd(leg);
-    if (flip != null) {
-      push('flip', i, flip, `${o.name} flips (turnover)`, `${from} → ${to} · peak ${kms(leg.vPeak)} · then decelerates for ${days(leg.t1 - flip)}`);
+    if (flip != null && flip < tArr) {
+      const peak = ts && !ts.failed ? ts.peakSpeed : leg.vPeak;
+      const arrive = ts && !ts.failed ? ts.arriveJd : leg.t1;
+      push('flip', i, flip, `${o.name} flips (turnover)`, `${from} → ${to} · peak ${kms(peak)} · then decelerates for ${days(arrive - flip)}`);
     }
 
     // close approaches and impacts: the N-body result for ballistic legs, sampled geometry for everything else
     let approaches = [], impacts = [];
-    if (sum) {
+    if (sum && !leg.cut) {
       if (sum.status === 'nbody') {
         approaches = sum.closest.filter((c) => c.close).map((c) => ({ ...c, radiusAu: (getBody(c.id)?.radiusKm ?? 0) / AU_KM }));
         impacts = sum.impacts.map((x) => ({ ...x, radiusAu: (getBody(x.id)?.radiusKm ?? 0) / AU_KM }));
       } else if (sum.status === 'failed') {
-        const s = sampledApproaches(o, leg, ctx);
-        approaches = s.filter((c) => c.distAu < 2 * c.soiAu && c.distAu >= c.radiusAu);
-        impacts = s.filter((c) => c.distAu < c.radiusAu);
+        const sa = sampledApproaches(o, leg, ctx, tArr);
+        approaches = sa.filter((c) => c.distAu < 2 * c.soiAu && c.distAu >= c.radiusAu);
+        impacts = sa.filter((c) => c.distAu < c.radiusAu);
       }
-    } else if (leg.T > 0) {
-      const s = sampledApproaches(o, leg, ctx);
-      approaches = s.filter((c) => c.distAu < 2 * c.soiAu && c.distAu >= c.radiusAu);
-      impacts = s.filter((c) => c.distAu < c.radiusAu);
+    } else if (T > 0) {
+      const sa = sampledApproaches(o, leg, ctx, tArr);
+      approaches = sa.filter((c) => c.distAu < 2 * c.soiAu && c.distAu >= c.radiusAu);
+      impacts = sa.filter((c) => c.distAu < c.radiusAu);
     }
     const impacted = new Set(impacts.map((x) => x.id));
     for (const c of approaches) {
@@ -190,13 +208,37 @@ function routeMilestones(o, ctx, out) {
       push('impact', i, x.jd, `${o.name} IMPACTS ${nameOf(x.id, ctx)}`, `the path enters the planet (${from} → ${to}); change the route`, { bodyId: x.id });
     }
 
-    if (leg.arrFlyby) {
+    // end of the leg: course change / engine cut at a waypoint, flyby, or arrival
+    if (isWaypoint(B)) {
+      const speed = kms(Math.hypot(+B.vx || 0, +B.vy || 0, +B.vz || 0));
+      const enginesOff = i + 1 === n - 1 || legSpec(m, i + 1).profile === 'drift';
+      if (enginesOff) {
+        push('engines', i, B.arriveJd, `${o.name} cuts its engines`, `drifting at ${speed}${leg.cut ? ` · was bound for ${to}` : ''}`);
+      } else if (leg.profile !== 'drift' || leg.cut) {
+        const next = stopName((m.stops[i + 2]?.aborted ?? m.stops[i + 2]), ctx);
+        push('course', i, B.arriveJd, `${o.name} changes course`, `${leg.cut ? `was bound for ${to}, ` : ''}now for ${next} · ${speed} at the change`);
+      } else {
+        const next = stopName((m.stops[i + 2]?.aborted ?? m.stops[i + 2]), ctx);
+        push('course', i, B.arriveJd, `${o.name} fires its engines`, `after drifting since ${days(B.arriveJd - leg.t0)} · now for ${next}`);
+      }
+    } else if (leg.arrFlyby) {
       const fb = flybys.get(i + 1);
       const detail = fb ? `${fb.verdict.text}${fb.fb ? ` · v∞ ${kms(fb.fb.vInfInAuDay)}` : ''}` : `zero-dwell waypoint · ${from} → ${stopName(m.stops[i + 2], ctx)}`;
-      push('flyby', i, leg.t1, `${o.name} flies by ${to}`, detail, { bodyId: B.ref ?? null });
+      push('flyby', i, tArr, `${o.name} ${leg.mode === 'intercept' ? 'intercepts' : 'flies by'} ${to}`, detail, { bodyId: B.ref ?? null });
+    } else if (leg.mode === 'intercept') {
+      const closing = ts && !ts.failed ? ts.closingSpeed : sum ? sum.vinfArr : NaN;
+      push('arrive', i, tArr, `${o.name} intercepts ${to}`, `from ${from} after ${days(T)} · closing speed ${kms(closing)}`, { bodyId: B.ref ?? null });
     } else {
-      const dv = leg.profile === 'brachistochrone' ? ` · Δv ${kms(leg.dv)}` : sum ? ` · v∞ ${kms(sum.vinfArr)}, capture ${kms(sum.arr.dv)}` : '';
-      push('arrive', i, leg.t1, `${o.name} arrives at ${to}`, `from ${from} after ${days(leg.T)}${dv}`, { bodyId: B.ref ?? null });
+      const dv = leg.profile === 'brachistochrone' ? ` · Δv ${kms(leg.dv)}` : ts && !ts.failed ? ` · Δv ${kms(ts.deltaV)}` : sum ? ` · v∞ ${kms(sum.vinfArr)}, capture ${kms(sum.arr.dv)}` : '';
+      push('arrive', i, tArr, `${o.name} arrives at ${to}`, `from ${from} after ${days(T)}${dv}`, { bodyId: B.ref ?? null });
+    }
+  }
+  // engines off at the end of the route: impacts found by the N-body drift
+  const drift = terminalDrift(o, ctx);
+  if (drift) {
+    const res = driftResult(drift);
+    for (const x of res?.impacts ?? []) {
+      push('impact', n - 1, x.jd, `${o.name} IMPACTS ${nameOf(x.id, ctx)}`, 'while drifting with the engines off', { bodyId: x.id });
     }
   }
 }

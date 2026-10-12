@@ -674,3 +674,20 @@ Full, scenario format additions) and two screenshots (`docs/screenshots/07-belt-
 `08-command-mode-preview.jpg`); `standalone/SolarSystem.html` regenerated. Scenario format stays version 1: `drive`, stop
 `leg`, waypoint and hold stops and `view.toggles.belt / kirkwood / beltMean` are additive (an older build ignores them and
 would fly such routes with the route-level profile).
+
+**Merged feature branches (story tools, launch windows).** *Story tools* (`src/sim/milestones.js`, `report.js`,
+`lightlag.js`; `src/ui/storyTools.js`, `timelineMilestones.js`, `milestonesSection.js`, `modals/report.js`;
+`src/scene/lightlag.js`): route milestones derived from every route and drawn as hollow ticks under the story events
+(toggle next to the timeline's Events… button; listed read-only in the Events dialog) — departures, flips (brachistochrone
+midpoint, or the torch solution's `flipJd`), flybys, close approaches inside 2 SOI, impacts (including N-body drift
+impacts), arrivals (intercepts with their closing speed), course changes at waypoints and "engines off" for engine cuts
+and drifts; **Tools ▾ → Situation report…** (Markdown status, positions, distances, signal delays, upcoming milestones;
+v3 legs are described as torch / intercept / drifting); the **Light-lag view** chip group (in the view toolbar, before
+the "Following" pill) draws ghosts at each object's retarded position as seen from the selected observer, for any motion
+including torch and drift legs (positions are evaluated through `positionOf`).
+
+*Launch windows* (`src/sim/porkchop.js`, `src/ui/porkchop.js`, `src/ui/modals/launchWindows.js`,
+`scripts/validate-porkchop.mjs`): a "Launch windows" tab in the travel planner (also **Tools ▾ → Launch windows…**) with
+a two-body porkchop grid of total Δv (parking-orbit burns as for ballistic legs), the cheapest trip of each window (one
+per synodic period), click / **Use** to evaluate a cell with the N-body ballistic planner, and a torch-ship trip-time
+curve for comparison. `npm run validate` runs four scripts (astro, N-body, maneuver, porkchop).
