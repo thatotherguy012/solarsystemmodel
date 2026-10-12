@@ -1,7 +1,7 @@
 {
   "name": "solar-system-model",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "Interactive 3D solar system for hard science fiction writing: accurate planet, moon, asteroid and comet positions plus user-defined ships, fleets, stations and story events.",
   "scripts": {
@@ -12,7 +12,8 @@
     "validate": "node scripts/validate-astro.mjs && node scripts/validate-nbody.mjs && node scripts/validate-maneuver.mjs",
     "validate:nbody": "node scripts/validate-nbody.mjs",
     "validate:maneuver": "node scripts/validate-maneuver.mjs",
-    "fetch-data": "node scripts/fetch-data.mjs"
+    "fetch-data": "node scripts/fetch-data.mjs",
+    "fetch-belt": "node scripts/fetch-belt.mjs"
   },
   "dependencies": {
     "three": "^0.186.1"
