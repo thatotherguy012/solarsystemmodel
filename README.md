@@ -15,7 +15,7 @@ No installation, no Node.js, no server:
 - **any system:** double-click **`standalone/SolarSystem.html`**.
 
 Either one opens the app in your default browser straight from disk. `standalone/SolarSystem.html` is a single
-self-contained file (about 770 KB) with all code, styles and data inside it, so it works offline and you can copy
+self-contained file (about 820 KB) with all code, styles and data inside it, so it works offline and you can copy
 it anywhere.
 
 You don't need to clone the repository to get it. On the GitHub repository page, either use **Code → Download ZIP**
@@ -35,7 +35,10 @@ After changing the code, regenerate the file with `npm run build:standalone`.
   the Sun, 8 planets, the Moon, 28 major moons, 9 dwarf planets, 30 main-belt asteroids, 4 Jupiter trojans,
   14 near-Earth objects, 4 centaurs and 12 comets.
 - **Seamless zoom** from the Kuiper belt down to a station in low orbit. The camera centres on the selected
-  object and follows it through time; bodies keep a minimum on-screen size (adjustable, or true scale).
+  object and follows it through time; bodies keep a minimum on-screen size scaled to their real size (the Sun is
+  always the largest marker, Jupiter about twice Earth, asteroids small dots), adjustable or true scale.
+- **Declutter**: hide any body (with its moons and orbit) or custom object (with its path) from the object list,
+  besides the category chips; collapse the object list and the inspector to thin strips.
 - **Your own objects** — ships, fleets, stations, habitats, bases, probes — with five motion models:
   - **Orbit**: Kepler elements about any body (presets: LEO, MEO, geostationary, low lunar, low Mars,
     areostationary, “equatorial” variants using the body's IAU pole);
@@ -43,15 +46,27 @@ After changing the code, regenerate the file with `npm run build:standalone`.
   - **Lagrange point**: L1–L5 of any primary/secondary pair (Sun–Earth, Earth–Moon, Sun–Jupiter…);
   - **Fixed point** in heliocentric coordinates (AU or km);
   - **Route**: multi-stop itineraries whose legs fly as **brachistochrone** (constant thrust, midpoint flip —
-    arrival times can be solved from the acceleration), **ballistic** (Lambert transfer coasting about the Sun),
-    or **linear**. Stops can be bodies, other custom objects (escorts, shuttles) or fixed points.
+    arrival times can be solved from the acceleration), **ballistic** (a coast through the gravity of the Sun and
+    all eight planets), or **linear**. Stops can be bodies, other custom objects (escorts, shuttles) or fixed points.
+- **Trajectory physics for ballistic legs**: an N-body cruise (Sun + 8 planets) targeted to arrive on time, with
+  patched-conic endpoints; departure / arrival excess speeds, burns from and into parking orbits, the leg's total
+  Δv, the closest planetary approaches and impact warnings. **Gravity assists**: mark an intermediate planet as a
+  flyby and get v∞ in/out, turn angle, required periapsis altitude and a verdict (unpowered assist feasible,
+  powered flyby Δv, or impossible turn).
+- **Gravity audit for brachistochrone legs**: the thrust actually needed to hold the straight line against the
+  Sun's and planets' pull, Δv including gravity, gravity loss, and whether the drive can hold the line at all.
 - **Travel planner**: “how long Earth→Mars at 0.3 g?”, “what acceleration to get there in 10 days?”,
-  “what does a ballistic transfer cost?” with a duration scan to spot cheap windows; turn any plan into a ship.
+  “what does a ballistic transfer cost?” (N-body, with parking-orbit burns and a duration scan to spot cheap
+  windows); turn any plan into a ship.
 - **Inspector** with position, speed, distance from Sun / parent / Earth, light time, route status (current leg,
-  arrival countdown, acceleration, peak velocity, Δv, v∞), osculating orbital elements, and editable notes.
+  arrival countdown, acceleration, peak velocity, Δv, v∞, burns, approaches, flybys), osculating orbital elements,
+  and editable notes.
 - **Distances table** from the selection to everything that matters, with one-way and round-trip light time,
   plus a persistent **measurement line** between any two objects.
-- **Story events** on a timeline strip; click to jump.
+- **Interactive timeline** with story events: drag the cursor to scrub time (the whole view follows live), click
+  to jump, drag to pan, mouse wheel to zoom from 1 day to 500 years.
+
+![A ballistic Earth → Jupiter (flyby) → Saturn route: N-body leg data, flyby analysis and the flyby ring on the path](docs/screenshots/06-flyby-route-nbody.jpg)
 - **Autosave** in the browser, **export/import** as JSON (merge or replace), and an example scenario.
 
 ## Quick start
@@ -64,7 +79,8 @@ npm run dev          # start the dev server (http://localhost:5173)
 npm run build        # production build into dist/ (works from any sub-path)
 npm run build:standalone  # single-file build into standalone/SolarSystem.html (runs from disk)
 npm run preview      # serve the production build locally
-npm run validate     # numeric checks of the astrodynamics core against JPL Horizons
+npm run validate     # numeric checks of the astrodynamics core (vs JPL Horizons) and of the N-body module
+npm run validate:nbody  # only the N-body checks (integrator, targeting, flybys, parking orbits, gravity audit)
 npm run fetch-data   # re-download small-body (SBDB) and moon (Horizons) data into src/data/
 ```
 
@@ -80,7 +96,14 @@ npm run fetch-data   # re-download small-body (SBDB) and moon (Horizons) data in
   frame selection.
 - Chips above the view toggle **Orbits · Labels · Grid · Moons · Asteroids · Comets · Custom**. Moons and
   orbiting objects hide automatically when their orbit would be smaller than ~10 px on screen.
-- **Marker size** sets the minimum on-screen radius of bodies (0 = true scale).
+- The **eye** at the end of each row in the object list hides that body (marker, label and orbit) or custom
+  object (with its route path); hiding a planet hides its moons too. The eyes in each group header show or hide
+  the whole group. A body is visible only if its category chip is on *and* it is not hidden individually. Hidden
+  rows are dimmed and still found by the search; the hidden set is saved with the scenario.
+- **Marker size** sets the minimum on-screen radius of bodies (0 = true scale). Each body's minimum is scaled by
+  (R / R<sub>Earth</sub>)<sup>0.3</sup>, clamped to 0.45–3×, so markers keep their size order at every zoom.
+- The chevron in the header of the object list or the inspector (or the keys **O** / **I**) collapses it to a thin
+  strip; click the strip to bring it back. The 3D view widens to fill, and the layout is saved with the scenario.
 - The search box filters the object list; **Enter** focuses the first match.
 
 ### Time
@@ -90,6 +113,18 @@ second, reverse time, or jump to **Now**. Type any UTC date into the date field 
 `2187-03-14 06:42`, negative years for BCE) and press Enter, or use the picker (years 1–9999). A warning appears
 outside the planetary ephemeris range.
 
+The **timeline** (bottom right) is a zoomable time axis:
+
+- **Drag the blue cursor** to scrub: the 3D view, the inspector and the distances follow live, and playback pauses.
+- **Click** anywhere on the axis to jump there; **drag the background** to pan the visible window.
+- **Mouse wheel** zooms about the pointer, from 1 day to 500 years; the buttons above the strip jump to a span of
+  1 d, 1 wk, 1 mo, 1 yr, 10 yr or 100 yr, and **Fit events** frames all story events and the current time.
+  Tick labels switch between hours, days, months and years.
+- Story events are coloured ticks: hover for the title, click to jump. Small counters at the ends show events
+  outside the window.
+- While playing, the window scrolls to keep the cursor in view (unless you are panning or zooming it). The span is
+  saved with the scenario.
+
 ### Adding objects and routes
 
 **＋ Object** opens the editor: name, type, colour, tags, notes, an optional existence window (the object is
@@ -97,17 +132,43 @@ hidden outside it), and the motion model. In a **route**, each stop has an arriv
 can be absolute (`YYYY-MM-DD HH:MM`, UTC) or relative to the previous time (`+20` days, `+12h`, `+1y`). For
 brachistochrone routes, leave an arrival blank and give an acceleration (g): the arrival is solved iteratively
 so the ship meets the target where it *will* be. The editor shows every leg's distance, duration, acceleration,
-peak velocity and Δv (or departure/arrival v∞ and transfer orbit for ballistic legs) and refuses inconsistent
+peak velocity and Δv (or departure/arrival v∞, burns and total Δv for ballistic legs) and refuses inconsistent
 routes.
+
+**Ballistic legs** are computed in two steps: the two-body Lambert arc appears immediately, and within a fraction of
+a second it is replaced by a trajectory integrated through the gravity of the Sun and the eight planets and
+corrected to arrive at the destination on time. For each leg you get:
+
+- the hyperbolic excess speed **v∞** at departure and arrival, relative to the stop's body (for a station in orbit,
+  relative to its planet);
+- the **departure burn** from a circular parking orbit and the **capture burn** into one. Set a stop's parking
+  altitude in the editor (blank = default: 300 km for rocky planets and large moons, 10% of the radius for gas
+  giants, half the radius (at least 5 km) for small bodies; a station's own orbit when the stop is a station);
+  Lagrange points and fixed points have no parking orbit, so the burn is the full velocity change;
+- the leg's **total Δv**, the **three closest approaches** to other planets (distance and date; “close approach”
+  inside two sphere-of-influence radii), a red **IMPACTS** badge if the path hits a planet, and the size of the
+  N-body correction compared with the two-body solution.
+
+Tick **flyby (no stop)** on an intermediate stop of a ballistic route to pass a planet without stopping (a moon
+uses its planet's gravity). The inspector and editor then show the flyby analysis: v∞ in and out, the turn angle,
+the periapsis altitude needed for that turn, and a verdict — *Unpowered gravity assist feasible*, *Needs powered
+flyby: Δv ≈ X km/s*, or *Turn too sharp: periapsis below the surface*. The flyby point is marked with a small ring
+on the path. The route total adds powered-flyby Δv to the burns.
+
+**Brachistochrone legs** stay straight lines, but each gets a **gravity audit**: the peak engine acceleration needed
+to hold the line against the Sun's and planets' pull, the Δv including gravity, the gravity loss, and a status —
+OK, *Marginal: engine needs X% more thrust than rated*, or *Cannot hold a straight line at this thrust* (raise the
+acceleration or fly that leg ballistic).
 
 ### Planner
 
 **Planner** → choose from/to (any body or custom object) and the departure date, then:
 
-1. *Brachistochrone, given acceleration* → duration, arrival date, peak velocity, Δv;
-2. *Brachistochrone, given duration* → required acceleration (g and m/s²), peak velocity, Δv;
-3. *Ballistic (Lambert), given duration* → departure and arrival excess speeds, transfer orbit a / e,
-   perihelion, and a scan of durations from 60 days to 3 years.
+1. *Brachistochrone, given acceleration* → duration, arrival date, peak velocity, Δv, and the gravity audit;
+2. *Brachistochrone, given duration* → required acceleration (g and m/s²), peak velocity, Δv, and the gravity audit;
+3. *Ballistic (N-body), given duration* → departure and arrival v∞, parking-orbit burns (editable parking
+   altitudes at both ends), total Δv, closest approaches, transfer orbit, and a scan of durations from 60 days to
+   3 years whose rows fill in with N-body numbers as they are computed.
 
 The straight-line distance and one-way light time at departure are always shown. **Create ship from this plan**
 opens the editor with a two-stop route filled in.
@@ -120,8 +181,8 @@ time from the selection to the Sun, all planets, the Moon, sibling moons and eve
 
 ### Events
 
-**＋ event at current time** (bottom right) or **Events…** manages story events (date, title, notes, colour).
-They appear as ticks on the timeline strip; click a tick to jump there, or click empty strip space to scrub.
+**＋ Event** (above the timeline) adds a story event at the current time; **Events…** manages them (date, title,
+notes, colour). They appear as ticks on the timeline strip; click a tick to jump there.
 
 ### Saving
 
@@ -138,6 +199,7 @@ the top bar.
 | `,` / `.` | Step back / forward |
 | `[` / `]` | Slower / faster |
 | `N` | Jump to now |
+| `O` / `I` | Collapse / expand the object list / the inspector |
 | `Esc` | Close dialogs, cancel measuring |
 | `Enter` (in search) | Focus the first match |
 
@@ -167,9 +229,15 @@ the top bar.
   ],
   "events": [ { "id": "e1", "jd": 2461334.5, "title": "Kestrel departs", "notes": "", "color": "#ffcc66" } ],
   "view": { "jd": 2461325.5, "focus": "earth", "selection": null, "toggles": { "orbits": true, "labels": true },
-            "markerPx": 4, "cameraDistance": 0.0064 }
+            "markerPx": 4, "cameraDistance": 0.0064, "hiddenIds": ["jupiter"],
+            "sidebarCollapsed": false, "inspectorCollapsed": false, "timelineSpan": 365.25 }
 }
 ```
+
+`hiddenIds` lists bodies and objects hidden with the eye toggles; `timelineSpan` is the visible span of the
+timeline in days (`null` = fit the events). Route stops may carry `"parkAltKm": 400` (parking-orbit altitude for
+the burns at that stop) and `"flyby": true` (an intermediate stop passed without stopping: `arriveJd` equals
+`departJd`).
 
 Times are Julian Dates (UTC). Other motion kinds:
 `{ "kind": "colocated", "parent": "mars", "label": "Surface" }`,
@@ -190,12 +258,26 @@ Route stops may use `"ref": null` with `x, y, z` (AU) for a fixed point. Body id
   Re-run `npm run fetch-data` to refresh.
 - **Moons**: [JPL Horizons](https://ssd.jpl.nasa.gov/horizons/) osculating elements at J2000 propagated as fixed
   Kepler orbits; orbit planes are right, phases drift over decades.
-- **Transfers**: brachistochrone = straight line, constant thrust, midpoint flip, solar gravity ignored (valid for
-  ≳0.01 g); ballistic = two-body Lambert about the Sun, planetary gravity ignored (no SOI, no capture burns).
+- **Ballistic legs**: integrated (adaptive Dormand–Prince 5(4)) in the gravity of the Sun and the 8 planets — Earth
+  and the Moon act as one body with their combined mass at the Earth–Moon barycentre — and targeted by differential
+  correction from the two-body Lambert solution so the ship arrives on time. **Patched-conic endpoints**: the
+  departure and arrival planets' gravity is switched off inside their sphere of influence (ramping back to full
+  strength by 2 SOI radii), and the departure / capture burns are computed from the hyperbolic excess speed for a
+  circular parking orbit. Moons, dwarf planets and asteroids do not perturb trajectories. If targeting does not
+  converge, the two-body arc is shown with a warning.
+- **Flybys** are patched conics: the heliocentric path is continuous in position but kinks in velocity at the flyby
+  planet; the turn is checked against the periapsis it needs (unpowered if the v∞ in and out agree within 3% and the
+  periapsis clears the surface by 5%); the hyperbola inside the sphere of influence is not modelled in detail.
+- **Brachistochrone legs** are straight lines at constant thrust with a midpoint flip; gravity does not bend them but
+  is accounted for by the gravity audit (required engine acceleration and Δv). Constant-thrust legs below ~0.01 g are
+  outside the model's validity: the Sun's pull at 1 AU (0.0006 g) becomes comparable to the thrust and a straight
+  line is no longer a meaningful trajectory.
 - **Light time**: straight-line distance / c, no relativistic corrections.
 
-`npm run validate` checks the core against Horizons reference vectors (Earth, Mars, Jupiter, Neptune, the Moon)
-and checks the Kepler, Lambert, universal-propagation and Lagrange code for self-consistency.
+`npm run validate` checks the core against Horizons reference vectors (Earth, Mars, Jupiter, Neptune, the Moon),
+checks the Kepler, Lambert, universal-propagation and Lagrange code for self-consistency, and then runs the N-body
+checks (integrator vs two-body propagation, perturber cache, targeting Earth→Mars and Earth→Jupiter→Saturn,
+flyby and parking-orbit formulas, brachistochrone gravity audits at 0.3, 0.01 and 0.0005 g).
 
 ## Publishing to GitHub Pages
 
@@ -218,13 +300,15 @@ standalone/SolarSystem.html prebuilt self-contained app; double-click to run fro
 Launch Solar System.cmd     Windows launcher for the standalone file
 scripts/fetch-data.mjs      downloads SBDB + Horizons data into src/data/*.json
 scripts/validate-astro.mjs  numeric validation of src/astro/
+scripts/validate-nbody.mjs  numeric validation of src/astro/nbody.js
 src/main.js                 bootstrap
 src/styles.css              dark theme
-src/astro/                  astrodynamics core: time, Kepler, Lambert, Lagrange, planets & Moon
+src/astro/                  astrodynamics core: time, Kepler, Lambert, Lagrange, planets & Moon, N-body (nbody.js)
 src/data/                   catalog.js (Sun/planets table, colours, loader) + generated JSON
-src/sim/                    ephemeris, custom-object motion, clock, store, scenario persistence
+src/sim/                    ephemeris (+ N-body perturbers), custom-object motion, trajectory job queue,
+                            leg physics (burns, flybys, audits), clock, store, scenario persistence
 src/scene/                  three.js renderer, bodies, custom objects, grid, starfield, measurement line
-src/ui/                     top bar, sidebar, inspector, time bar, timeline, modals, formatting
+src/ui/                     top bar, sidebar, panels, inspector, leg info, time bar, timeline, modals, formatting
 ```
 
 ## License

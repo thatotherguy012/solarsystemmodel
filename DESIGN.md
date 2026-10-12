@@ -509,3 +509,70 @@ step cannot do it) · Project structure · License (MIT, author Sam / thatotherg
 Concise: what was built (by file group), data counts, validation/build/browser-test results with any
 numbers checked, screenshots paths, git commits and push status, deviations from this spec and why,
 known limitations. No questions — make reasonable decisions and record them.
+
+---
+
+## Version 2 (summary of changes after v1)
+
+**A. Per-object visibility.** Every row of the object browser has an eye toggle (subtle, brighter on hover);
+group headers have show-all / hide-all eyes. The individually hidden ids live in the store (`hiddenIds`) and the
+scenario view (`view.hiddenIds`). A body is drawn iff its category chip is on *and* it is not hidden; hiding a
+body hides its mesh, label and orbit line, hiding a planet (or Pluto) also hides its moons, and hiding a custom
+object hides its marker, label, orbit ellipse and route path. An explicit hide wins over selection/focus (a
+disabled category is still overridden for the selection, as in v1). Custom objects co-located with or parked at a
+hidden body stay visible (they have their own toggles). Hidden rows are dimmed and remain searchable.
+
+**B. Collapsible side panels.** Both the object browser and the inspector collapse to a 28 px strip with an
+expand chevron (chevron in the panel header on the edge next to the view; keys `O` and `I`). The grid column
+animates and the canvas follows through its ResizeObserver. State in the store (`sidebarCollapsed`,
+`inspectorCollapsed`) and the scenario view; scenarios without these fields keep the current layout.
+
+**C. Interactive timeline** (`src/ui/timeline.js`). A window `[start, start + span]` (span persisted as
+`view.timelineSpan`, 1 day … 500 years). Drag the cursor (handle + 12 px hit zone) to scrub: `jd` is set on every
+pointermove and playback pauses. A click without movement sets the time; a drag on the background pans; the wheel
+zooms about the pointer (horizontal trackpad scroll pans). Presets 1 d / 1 wk / 1 mo / 1 yr / 10 yr / 100 yr
+(zoom about the cursor) and "Fit events". Ticks are calendar-aligned hours, days (1/2/5/10), months (1/2/3/6) or
+years (1…100), ~64 px apart, with major ticks at day/year boundaries; edge counters show events outside the
+window. While playing, the window pages so the cursor stays in view unless the strip was dragged or zoomed in the
+last 1.5 s; after a jump while paused it recentres.
+
+**D. Scaled markers.** `minPx(body) = markerPx × clamp((R / R_earth)^0.3, 0.45, 3)` (Sun 3×, Jupiter 2.05×,
+Saturn 1.94×, Earth 1×, Mars 0.83×, Mercury 0.75×, Ceres and smaller 0.45×). The Sun's glow diameter is
+`max(24 px, 4.5 × marker radius)`. Custom-object markers are unchanged (fixed ~5–6 px).
+
+**E. Trajectory physics** (`src/astro/nbody.js`, validated by `scripts/validate-nbody.mjs`).
+- `src/sim/ephemeris.js`: `getPerturbers()` builds the 8 planet systems once (`gm` via `gmToAuDay`, `radiusAu`,
+  `soiAu = soiRadius(a, gm)`, `state(jd)` from `planetState`; Earth + Moon as one perturber at the EMB with
+  combined GM). `perturberIdFor(ref, lookupCustom)` maps a stop to the perturber excluded at that endpoint
+  (planet → itself; moon → its planet; custom orbit / co-located object → its body's perturber; Lagrange point →
+  the planet of the pair; small bodies, the Sun and fixed points → none).
+- `src/sim/trajectory.js`: lazy job queue (one job per `requestIdleCallback` slot, most recent request first, cap
+  96) and an LRU result cache (400) keyed by leg geometry (times, endpoint positions, endpoint set), so edits that
+  do not move a leg (notes, colour, name) never recompute it. Jobs: ballistic targeting
+  (`cachePerturbers` → `makeAccel({endpointIds})` → `targetTransfer` from the Lambert guess) and brachistochrone
+  gravity audits. Results notify listeners once per frame; the app then clears memoized custom positions, rebuilds
+  affected route paths and refreshes the inspector / editor / planner.
+- `src/sim/custom.js`: ballistic legs keep the two-body Lambert arc until the N-body result arrives; then
+  `pos(jd) = interpolateSamples(samples, jd).r` and the drawn path merges the integrator steps into a uniform
+  256-point grid. Failed targeting falls back to the two-body arc (yellow note); a failed Lambert guess keeps the
+  linear fallback. v∞ is measured against the stop's *frame body* (a station in orbit reports v∞ relative to its
+  planet). Stops gain optional `parkAltKm` and `flyby` (zero dwell: `arriveJd === departJd`, only for
+  intermediate stops).
+- `src/sim/legPhysics.js`: parking-orbit burns via `parkingOrbitDeltaV` (defaults: 300 km for rocky planets and
+  moons ≥ 100 km radius, 10% of R for gas giants, max(5 km, 0.5 R) for small bodies and small moons; a stop that
+  is a custom object in orbit uses that orbit; no parking orbit at the Sun, Lagrange or fixed points → Δv = v∞),
+  leg totals, three closest non-endpoint approaches (flagged inside 2 SOI), impacts, the N-body correction vs
+  two-body; gravity-audit status (OK ≤ 1.1 × profile acceleration, marginal ≤ 1.5, otherwise "cannot hold a
+  straight line"); flyby analysis with `flybyAnalysis` at the planet (moons map to their planet) and verdicts
+  "Unpowered gravity assist feasible" / "Needs powered flyby: Δv ≈ X km/s" / "Turn too sharp: periapsis below the
+  surface"; route totals (burns + powered-flyby Δv).
+- UI: `src/ui/legInfo.js` renders the leg physics for the inspector and the route editor (flyby checkbox and
+  per-stop parking altitude); flyby stops get a ring on the 3D path. The planner evaluates plans as temporary
+  one-leg routes (identical numbers to a ship created from the plan), with editable parking altitudes, N-body scan
+  rows filled progressively, and the gravity-audit line for brachistochrone modes.
+- Accuracy notes (Help, README): ballistic legs are Sun + 8 planets N-body with patched-conic endpoints; flybys are
+  patched conics (position-continuous, velocity kink); brachistochrone legs stay straight lines with gravity
+  accounting; constant-thrust legs below ~0.01 g are outside the model's validity.
+
+**F.** `npm run validate` runs both validation scripts (`validate:nbody` alone); README and screenshots updated;
+`standalone/SolarSystem.html` regenerated.
