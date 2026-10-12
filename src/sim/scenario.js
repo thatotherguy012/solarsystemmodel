@@ -46,6 +46,7 @@ export function validateScenario(doc) {
       existsFromJd: Number.isFinite(o.existsFromJd) ? o.existsFromJd : null,
       existsUntilJd: Number.isFinite(o.existsUntilJd) ? o.existsUntilJd : null,
       showPath: o.showPath !== false, motion: o.motion,
+      ...(validDrive(o.drive) ? { drive: validDrive(o.drive) } : {}),
     });
   });
   const events = [];
@@ -56,11 +57,26 @@ export function validateScenario(doc) {
   return { ok: true, errors, scenario: { version: SCENARIO_VERSION, name: String(doc.name ?? 'Imported scenario'), objects, events, view: doc.view ?? null } };
 }
 
+/** A drive record { kind: 'torch', accelG } | { kind: 'coast' } | { kind: 'none' }, or null when invalid / absent. */
+function validDrive(d) {
+  if (!d || typeof d !== 'object') return null;
+  if (d.kind === 'torch') return { kind: 'torch', accelG: Number(d.accelG) > 0 ? Number(d.accelG) : 0.3 };
+  if (d.kind === 'coast' || d.kind === 'none') return { kind: d.kind };
+  return null;
+}
+
 function remapRefs(motion, map) {
   const m = structuredClone(motion);
   const r = (id) => (id != null && map.has(id) ? map.get(id) : id);
   if (m.kind === 'orbit' || m.kind === 'colocated') m.parent = r(m.parent);
-  if (m.kind === 'route') m.stops = m.stops.map((s) => ({ ...s, ref: r(s.ref) }));
+  if (m.kind === 'route') {
+    m.stops = m.stops.map((s) => {
+      const out = { ...s, ref: r(s.ref) };
+      if (s.aborted) out.aborted = { ...s.aborted, ref: r(s.aborted.ref) };
+      if (s.kind === 'hold' && s.motion) out.motion = remapRefs(s.motion, map);
+      return out;
+    });
+  }
   return m;
 }
 
@@ -103,6 +119,8 @@ export function applyScenario(sc, mode = 'replace') {
     measure: null,
     measureArmed: false,
     playing: false,
+    multiSelection: [],
+    command: null,
   });
 }
 
@@ -206,9 +224,9 @@ export function exampleScenario() {
       motion: { kind: 'orbit', parent: 'earth', aKm: 42164, e: 0, iDeg: 0, omDeg: 0, wDeg: 0, m0Deg: 0, epochJd: t } },
     { ...base, id: 'ex-yards', name: 'Tsiolkovsky Yards', type: 'habitat', color: '#b48cff', tags: ['Industry'],
       notes: 'Shipyard at Earth–Moon L2.', motion: { kind: 'lagrange', primary: 'earth', secondary: 'moon', point: 'L2' } },
-    { ...base, id: 'ex-ardent', name: 'Ardent', type: 'ship', color: '#ff8a3d', tags: ['Navy', 'Act 1'],
+    { ...base, id: 'ex-ardent', name: 'Ardent', type: 'ship', color: '#ff8a3d', tags: ['Navy', 'Act 1'], drive: { kind: 'torch', accelG: 0.3 },
       notes: 'Fast courier. 0.3 g torch drive, flip-and-burn.', motion: { kind: 'route', profile: 'brachistochrone', accelG: 0.3, stops: ardentStops } },
-    { ...base, id: 'ex-hermes', name: 'Hermes', type: 'ship', color: '#e8d44d', tags: ['Freight'],
+    { ...base, id: 'ex-hermes', name: 'Hermes', type: 'ship', color: '#e8d44d', tags: ['Freight'], drive: { kind: 'coast' },
       notes: 'Slow freighter, Hohmann-ish.',
       motion: { kind: 'route', profile: 'ballistic', stops: [
         { ref: 'earth', arriveJd: null, departJd: t + 30 },
@@ -216,10 +234,10 @@ export function exampleScenario() {
       ] } },
     { ...base, id: 'ex-olympus', name: 'Olympus Base', type: 'base', color: '#ff6b6b', tags: ['Colony'],
       notes: 'Surface settlement on the flank of Olympus Mons.', motion: { kind: 'colocated', parent: 'mars', label: 'Surface' } },
-    { ...base, id: 'ex-perimeter', name: 'Perimeter Watch', type: 'fleet', color: '#4fd18b', tags: ['Navy'],
+    { ...base, id: 'ex-perimeter', name: 'Perimeter Watch', type: 'fleet', color: '#4fd18b', tags: ['Navy'], drive: { kind: 'torch', accelG: 0.5 },
       notes: 'Picket squadron just outside Callisto’s orbit.',
       motion: { kind: 'orbit', parent: 'jupiter', aKm: 1.9e6, e: 0, iDeg: 2, omDeg: 0, wDeg: 0, m0Deg: 0, epochJd: t } },
-    { ...base, id: 'ex-farhorizon', name: 'Far Horizon', type: 'probe', color: '#7fe3ff', tags: ['Science'],
+    { ...base, id: 'ex-farhorizon', name: 'Far Horizon', type: 'probe', color: '#7fe3ff', tags: ['Science'], drive: { kind: 'torch', accelG: 0.01 },
       notes: 'Uncrewed 0.01 g fusion probe to Neptune.', motion: { kind: 'route', profile: 'brachistochrone', accelG: 0.01, stops: farStops } },
     { ...base, id: 'ex-vesta', name: 'Vesta Mining Camp', type: 'base', color: '#d6a35c', tags: ['Industry'],
       notes: 'Regolith processing outpost.', motion: { kind: 'colocated', parent: 'vesta', label: 'Surface' } },

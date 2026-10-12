@@ -126,6 +126,28 @@ export function getState(id, jd) {
   return s;
 }
 
+/**
+ * Like getState but bypassing the per-JD memo (for solvers that probe many distinct times, which would otherwise
+ * evict the render loop's cache entries).
+ */
+export function getStateUncached(id, jd) {
+  const b = bodies.get(id);
+  if (!b) return { r: [0, 0, 0], v: [0, 0, 0] };
+  if (b.ephem.kind === 'kepler' && b.parent && b.parent !== 'sun') {
+    const rel = elementsToState(b.ephem.elements, keplerMu(b), jd);
+    const p = getStateUncached(b.parent, jd);
+    return { r: vadd(p.r, rel.r), v: vadd(p.v, rel.v) };
+  }
+  if (b.ephem.kind === 'moon-earth') {
+    const e = earthState(jd);
+    const g = moonGeocentric(jd).r;
+    const h = 0.01;
+    const vrel = vscale(vsub(moonGeocentric(jd + h).r, moonGeocentric(jd - h).r), 1 / (2 * h));
+    return { r: vadd(e.r, g), v: vadd(e.v, vrel) };
+  }
+  return computeState(b, jd);
+}
+
 /** Heliocentric position (AU). */
 export function getPosition(id, jd) {
   return getState(id, jd).r;

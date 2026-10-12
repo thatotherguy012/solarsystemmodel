@@ -3,7 +3,14 @@ import { createContext } from './custom.js';
 import { nowJd } from '../astro/time.js';
 
 /** Default visibility toggles. */
-export const DEFAULT_TOGGLES = { orbits: true, labels: true, grid: true, moons: true, asteroids: true, comets: true, custom: true };
+export const DEFAULT_TOGGLES = {
+  orbits: true, labels: true, grid: true, moons: true, asteroids: true, comets: true, custom: true, belt: true, kirkwood: false, beltMean: false,
+};
+
+const DETAIL_KEY = 'ssm.ui.detail';
+function loadDetail() {
+  try { return localStorage.getItem(DETAIL_KEY) === 'full' ? 'full' : 'simple'; } catch { return 'simple'; }
+}
 
 /**
  * @typedef {Object} AppState
@@ -27,6 +34,9 @@ export const DEFAULT_TOGGLES = { orbits: true, labels: true, grid: true, moons: 
  * @property {boolean} sidebarCollapsed   object browser collapsed to a strip
  * @property {boolean} inspectorCollapsed inspector collapsed to a strip
  * @property {number|null} timelineSpan   visible span of the timeline strip (days); null = fit the events
+ * @property {string[]} multiSelection   further ships selected with shift-click (commands apply to all of them)
+ * @property {{mode:'goto'|'intercept'|'place', ids:string[]}|null} command  targeting mode of the command bar
+ * @property {'simple'|'full'} detail     inspector / editor detail level (UI preference, localStorage)
  */
 
 function createStore(initial) {
@@ -80,7 +90,42 @@ export const store = createStore({
   sidebarCollapsed: false,
   inspectorCollapsed: false,
   timelineSpan: null,
+  multiSelection: [],
+  command: null,
+  detail: loadDetail(),
 });
+
+/** Switch the Simple / Full detail level (remembered in this browser). */
+export function setDetail(detail) {
+  const v = detail === 'full' ? 'full' : 'simple';
+  try { localStorage.setItem(DETAIL_KEY, v); } catch { /* ignore */ }
+  store.set({ detail: v });
+}
+
+/** All selected ids: the primary selection first, then shift-clicked extras. */
+export function selectedIds(state = store.get()) {
+  const out = state.selection ? [state.selection] : [];
+  for (const id of state.multiSelection) if (!out.includes(id)) out.push(id);
+  return out;
+}
+
+/** Clear the selection (the camera keeps following its focus). */
+export function deselect() {
+  store.set({ selection: null, multiSelection: [] });
+}
+
+/** Shift-click: add a custom object to (or remove it from) the multi-selection. */
+export function toggleMultiSelect(id) {
+  const s = store.get();
+  if (!s.selection) { store.set({ selection: id, multiSelection: [] }); return; }
+  if (s.selection === id) {
+    const [next, ...rest] = s.multiSelection;
+    store.set({ selection: next ?? null, multiSelection: rest });
+    return;
+  }
+  const has = s.multiSelection.includes(id);
+  store.set({ multiSelection: has ? s.multiSelection.filter((x) => x !== id) : [...s.multiSelection, id] });
+}
 
 // ------------------------------------------------------------------ per-object visibility
 
@@ -116,7 +161,7 @@ export function newId() {
 /** Select an object and centre the camera on it (the single click behaviour). */
 export function selectAndFocus(id) {
   if (!id) return;
-  store.set({ selection: id, focus: id });
+  store.set({ selection: id, focus: id, multiSelection: [] });
 }
 
 /** Insert or replace a custom object. */
@@ -138,6 +183,7 @@ export function deleteObject(id) {
   const s = store.get();
   const patch = { objects: s.objects.filter((o) => o.id !== id) };
   if (s.selection === id) patch.selection = null;
+  if (s.multiSelection.includes(id)) patch.multiSelection = s.multiSelection.filter((x) => x !== id);
   if (s.focus === id) patch.focus = 'sun';
   if (s.measure && (s.measure.a === id || s.measure.b === id)) patch.measure = null;
   if (s.hiddenIds.includes(id)) patch.hiddenIds = s.hiddenIds.filter((x) => x !== id);
