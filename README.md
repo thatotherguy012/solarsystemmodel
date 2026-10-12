@@ -330,3 +330,66 @@ CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFT
 IN THE SOFTWARE.
 
 Ephemeris data courtesy of NASA/JPL Solar System Dynamics.
+
+## Story tools
+
+Three tools for working with the scenario as a story: milestones that come straight out of the routes, a
+plain-text situation report, and a view of what an observer can actually see given the speed of light.
+
+### Automatic milestones
+
+Every route yields its own milestones: **departures** (“Ardent departs Earth”), **flips** (the turnover of a
+brachistochrone leg at its midpoint), **flybys**, **close approaches** to a planet inside two sphere-of-influence
+radii, **impacts**, and **arrivals**. Ballistic legs use their N-body results (closest approaches, impacts, v∞ and
+burns); straight and constant-thrust legs are sampled along the actual path for approaches to every planet that is
+not an endpoint. Milestones are drawn as hollow ticks in the object's colour below the story-event ticks on the
+timeline (rectangles for departures and arrivals, a diamond for a flip, circles for flybys, approaches and impacts).
+Hover a tick for the details (all milestones under the pointer are listed), click it to jump there. The
+**Auto milestones** button next to the event buttons hides them (remembered in this browser). The Events dialog
+lists them read-only under **Derived milestones**, each with a Jump button. Milestones are recomputed (debounced)
+whenever a route changes or a background N-body result arrives, and they are never saved to the scenario: story
+events stay yours.
+
+![Auto milestones on the timeline: story events above, hollow milestone ticks below, the flip tooltip](docs/screenshots/milestones-timeline.jpg)
+
+### Situation report
+
+**Situation report…** (top bar, next to Events) writes a Markdown report for any date (default: the current
+simulation time). Choose the custom objects and natural bodies to include (by default every custom object, the
+Sun, Earth, and the bodies the objects are at or travelling between), the distance unit (AU with million km or km,
+or AU only), the speed unit (km/s, m/s or % of light speed), the look-ahead window (30 days by default) and whether
+the pair table lists all pairs or only pairs with a custom object. The report contains:
+
+- one block per custom object with a plain-language status — “En route Earth → Mars, arrives 2026-10-28 12:58 UTC
+  (in 4.5 d), 508 km/s; accelerating at 0.30 g, flip in 1.3 d”, “In orbit around Earth (altitude 35,793 km,
+  period 23.93 h)”, “On the surface of Mars”, “Parked at Ceres”, “…; engines off, drifting (ballistic coast)” —
+  its heliocentric position, its distance from the Sun and from Earth (AU and million km) and its signal delay to
+  Earth (one way and round trip);
+- a table of the included natural bodies;
+- a table of distances and one-way signal delays between every pair of included objects and bodies;
+- the derived milestones and the story events in the look-ahead window.
+
+The tables are padded so they line up in a plain-text editor. **Copy to clipboard** or **Download .md**
+(`<scenario> situation report <date>.md`). The numbers are the ones the inspector shows (same positions, same
+light-time convention: straight-line distance / c).
+
+### Light-lag view
+
+Turn on **Light-lag view** (chip above the 3D view) and select an observer — a ship, a station, a planet. Every
+other visible custom object then gets a ghost marker (a broken ring) at its *retarded* position: where it was when
+the light now reaching the observer left it. The delay τ solves τ = |r<sub>obj</sub>(t − τ) − r<sub>obs</sub>(t)| / c
+(four fixed-point passes). A faint line joins each ghost to the object's true position and a label says how old the
+sighting is (“seen 5 min 8 s ago”); **+ planets** adds ghosts for the eight planets. Ghosts follow the camera's
+focus-relative origin and update every frame while time runs. An object that ceased to exist less than τ ago is
+still seen (“gone since”); one created less than τ ago is not seen yet.
+
+This is what the observer's telescopes, radar and passive sensors would show at that moment — the only picture a
+captain has. In a hard-SF space battle it is the constraint that shapes tactics: a ship 0.6 AU away is seen where it
+was five minutes ago, and at 800 km/s that is 240,000 km behind where it really is; an order sent to it arrives
+another five minutes later.
+
+![Light-lag view from Earth: Ardent at its flip (true position, centre) and its ghost, seen 5 min 8 s ago, 236,000 km back along its path](docs/screenshots/light-lag-view.jpg)
+
+Code: `src/sim/milestones.js`, `src/sim/report.js`, `src/sim/lightlag.js` (no DOM); `src/ui/timelineMilestones.js`,
+`src/ui/milestonesSection.js`, `src/ui/modals/report.js`, `src/scene/lightlag.js` (self-contained THREE objects
+and CSS2D labels); `src/ui/storyTools.js` wires them in; styles in `src/styles-story-tools.css`.
