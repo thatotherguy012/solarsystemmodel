@@ -14,13 +14,14 @@ import { openModal, h } from '../modal.js';
 import { refPicker } from '../components.js';
 import { ballisticHtml, auditHtml } from '../legInfo.js';
 import { fmtDist, fmtKmS, fmtSpeedKmS, fmtG, fmtDuration, fmtLightTime, fmtAu, fmtMS2, fmtMkm, esc } from '../format.js';
+import { createLaunchWindowsTab } from './launchWindows.js';
 
 const SCAN_DAYS = [60, 90, 120, 150, 180, 210, 240, 300, 365, 450, 550, 730, 900, 1096];
 const GROUP = 'planner';
 
 /**
  * @param {Object} app
- * @param {{from?:string, to?:string}} [init]
+ * @param {{from?:string, to?:string, tab?:'plan'|'windows'}} [init] tab: open on the "Launch windows" tab
  */
 export function openPlanner(app, init = {}) {
   const s0 = store.get();
@@ -33,6 +34,8 @@ export function openPlanner(app, init = {}) {
   if (state.from === state.to) state.to = state.from === 'earth' ? 'mars' : 'earth';
 
   const body = h(`<div class="planner">
+    <div class="tabs planner-tabs" role="tablist" aria-label="Planner views"><button type="button" class="tab" role="tab" data-tab="plan" aria-selected="true">Plan a trip</button><button type="button" class="tab" role="tab" data-tab="windows" aria-selected="false">Launch windows</button></div>
+    <div data-pane="plan">
     <div class="form-grid">
       <div class="field"><span class="field-label">From</span><div data-f="from"></div></div>
       <div class="field"><span class="field-label">To</span><div data-f="to"></div></div>
@@ -49,15 +52,19 @@ export function openPlanner(app, init = {}) {
     </div>
     <div class="planner-out" data-f="out" aria-live="polite"></div>
     <div data-f="scan"></div>
+    </div>
+    <div data-pane="windows" hidden></div>
   </div>`);
   const foot = h(`<div class="btn-row"><span class="muted small">Ballistic: Sun + 8 planets N-body, patched-conic ends. Brachistochrone: straight line with a gravity audit.</span><span class="spacer"></span>
     <button class="btn" data-a="close">Close</button><button class="btn primary" data-a="create">Create ship from this plan</button></div>`);
   let unsub = () => {};
-  const modal = openModal({ title: 'Travel planner', body, footer: foot, wide: true, onClose: () => { unsub(); cancelGroup(GROUP); } });
+  /** "Launch windows" tab (created below) and the active tab. */
+  let windows = null, activeTab = 'plan';
+  const modal = openModal({ title: 'Travel planner', body, footer: foot, wide: true, onClose: () => { unsub(); cancelGroup(GROUP); windows?.destroy(); } });
   const q = (sel) => body.querySelector(sel);
 
-  const fromP = refPicker({ value: state.from, ariaLabel: 'From', onChange: (v) => { state.from = v; compute(); } });
-  const toP = refPicker({ value: state.to, ariaLabel: 'To', onChange: (v) => { state.to = v; compute(); } });
+  const fromP = refPicker({ value: state.from, ariaLabel: 'From', onChange: (v) => { state.from = v; windows?.inputsChanged(); compute(); } });
+  const toP = refPicker({ value: state.to, ariaLabel: 'To', onChange: (v) => { state.to = v; windows?.inputsChanged(); compute(); } });
   q('[data-f=from]').appendChild(fromP.el);
   q('[data-f=to]').appendChild(toP.el);
   for (const inp of body.querySelectorAll('[data-k]')) {
@@ -155,8 +162,8 @@ export function openPlanner(app, init = {}) {
         if (au) { html += au.rows; notes += au.notes; }
         plan = { profile: 'brachistochrone', accelG: auDay2ToMS2(a) / G0_M_S2, t0, t1: t0 + T, solved: false };
       } else {
-        // scan rows are requested first so the main plan (requested last) is computed first
-        renderScan(t0, parkDep, parkArr);
+        // scan rows are requested first so the main plan (requested last) is computed first (Plan tab only)
+        if (activeTab === 'plan') renderScan(t0, parkDep, parkArr);
         const leg = tmpLeg('__planner_main', 'ballistic', t0, t0 + T, parkDep, parkArr);
         if (!leg.ballistic) html += '</dl><div class="msg warn">⚠ No ballistic (single-revolution Lambert) solution for this geometry and duration.</div><dl class="kv wide">';
         else {
@@ -170,7 +177,8 @@ export function openPlanner(app, init = {}) {
     }
     html += '</dl>' + notes;
     out.innerHTML = html;
-    foot.querySelector('[data-a=create]').disabled = !plan;
+    // on the Launch windows tab the plan only counts once a cell / torch departure has been picked there
+    foot.querySelector('[data-a=create]').disabled = !plan || (activeTab === 'windows' && !windows?.hasSelection());
     if (!ballisticMode) scan.innerHTML = '';
   }
 
@@ -234,7 +242,37 @@ export function openPlanner(app, init = {}) {
     app.openEditor(null, prefill);
   });
 
+  // ---- "Launch windows" tab (porkchop plot + torch-ship curve, ./launchWindows.js). It borrows the From/To pickers
+  // and the result block while shown, and sets the plan through applyPlan() when a cell or a departure is picked.
+  /** Set plan fields (state keys of the Plan tab's inputs, e.g. mode, departStr, durationDays), sync the inputs, recompute. */
+  function applyPlan(patch) {
+    Object.assign(state, patch);
+    for (const inp of q('[data-pane=plan]').querySelectorAll('[data-k]')) if (inp.dataset.k in patch) inp.value = state[inp.dataset.k];
+    compute();
+  }
+  windows = createLaunchWindowsTab(app, { state, fromPicker: fromP, toPicker: toP, outEl: q('[data-f=out]'), applyPlan });
+  q('[data-pane=windows]').appendChild(windows.el);
+
+  /** Switch between the "Plan a trip" ('plan') and "Launch windows" ('windows') tabs. */
+  function selectTab(name) {
+    if (name === activeTab) return;
+    activeTab = name;
+    for (const b of body.querySelectorAll('[data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === name));
+    q('[data-pane=plan]').hidden = name !== 'plan';
+    q('[data-pane=windows]').hidden = name !== 'windows';
+    if (name === 'windows') windows.show();
+    else {
+      windows.hide();
+      q('[data-f=from]').appendChild(fromP.el);
+      q('[data-f=to]').appendChild(toP.el);
+      q('[data-f=scan]').before(q('[data-f=out]'));
+    }
+    compute();
+  }
+  q('.planner-tabs').addEventListener('click', (ev) => { const b = ev.target.closest('[data-tab]'); if (b) selectTab(b.dataset.tab); });
+
   // background N-body results: refresh the ballistic numbers and the scan; audits for the brachistochrone modes
   unsub = onTrajectoryUpdate(() => compute());
   compute();
+  if (init.tab === 'windows') selectTab('windows');
 }

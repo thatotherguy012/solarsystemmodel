@@ -330,3 +330,63 @@ CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFT
 IN THE SOFTWARE.
 
 Ephemeris data courtesy of NASA/JPL Solar System Dynamics.
+
+## Launch windows
+
+**Planner → Launch windows** answers “when should my ship leave?”. It has two charts.
+
+![Earth → Mars launch windows 2027–2029: porkchop plot of total Δv with the best transfer marked, hover read-out and the list of windows](docs/screenshots/07-launch-windows-porkchop.jpg)
+
+### Coasting ships: the porkchop plot
+
+Each point of the plot is one possible coasting (ballistic) trip: leave on the date along the bottom, fall freely
+around the Sun for the flight time on the left, arrive. The colour is what that trip costs — **dark is cheap**, bright
+yellow is expensive or off the scale. Cheap trips bunch into dark islands: these are the **launch windows**. The plot
+gets its name from their shape.
+
+The cost is the **total Δv**: the burn that throws the ship out of a circular parking orbit at departure plus the burn
+that captures it into a parking orbit at the destination (300 km for rocky planets and large moons, 10% of the radius
+for gas giants, half the radius for small bodies, a station's own orbit when you leave from a station — the same rules
+as ships' ballistic legs; you can change both altitudes). The **Colour by** menu also shows the departure v∞, the
+arrival v∞ (the leftover speed relative to the planet once far from it) or the departure burn alone.
+
+Why windows? A coasting ship spends months on a Sun-centred orbit, so it can only leave when the target will be at the
+right place when it gets there. That geometry repeats once per **synodic period**, the time the two planets take to
+return to the same positions relative to each other: about **every 26 months for Earth and Mars**, about **every
+13 months for Earth and Jupiter** (Jupiter moves so slowly that Earth laps it every year and a month). A window usually
+has two lobes: short trips that go less than halfway round the Sun and long trips that go more than halfway. Trips of
+almost exactly half an orbit (180°) are left grey: their orbital plane is undefined and they would need an enormous
+plane change.
+
+How to use it:
+
+- Choose **From** and **To** (any body or your own objects), the first departure date (default: the current simulation
+  date), the **span** (6 months to 5 years), the range of flight times (default 60–600 days) and the grid (default
+  72 × 60 = 4,320 transfers). The plot computes in the background in a fraction of a second; a progress bar and
+  **Cancel** appear for large grids.
+- **Hover** for the numbers of any trip: departure and arrival dates, flight time, both v∞, both burns and the total Δv.
+  The white ring marks the cheapest trip (“best: 2028-11-23, 300 d, 5.86 km/s” for Earth → Mars).
+- **Click** a point to select it: the planner switches to its ballistic mode with that departure and duration, refines
+  the trip with the full N-body model and shows the same numbers a ship would (burns, closest approaches, impacts).
+  **Create ship from this plan** turns it into a route.
+- **Next windows** lists the cheapest trip of each window in the span (one per synodic period), with **Jump to date**
+  (moves the simulation there) and **Use** (selects it). A window flagged *span start* / *span end* probably continues
+  outside the span.
+
+**Speed versus accuracy:** to compute thousands of trips in a moment the plot uses two-body transfers (Lambert's
+problem with the Sun's gravity only). The trip you select is refined in the Sun + 8 planets N-body model, so its
+numbers can differ slightly from the colour under the pointer.
+
+### Torch ships: the window curve
+
+The second chart shows a constant-thrust ship's trip time (and peak speed) for every departure date in the span, for
+the chosen acceleration (default 0.3 g) in **rendezvous** mode (flip and brake to match the target's speed) or
+**intercept** mode (burn all the way). Its point: launch windows hardly matter to torch ships. At 0.3 g, Earth → Mars
+takes 4–8 days whenever you leave — the spread is just the changing distance — while the cheapest coasting trip over
+the same years swings from about 6 km/s to over 25 km/s. Torch ships cross the inner system in days, so the planets
+barely move during the trip and nothing has to line up. Click the curve to plan that flight (the planner's
+brachistochrone mode, with its gravity audit) and create a ship from it. The curve uses the gravity-free constant-thrust
+solution starting from the departure body's own velocity; below about 0.01 g it is only indicative.
+
+`node scripts/validate-porkchop.mjs` checks the launch-window maths (Earth–Mars minimum 5.5–6.5 km/s in the late-2028
+window, synodic periods, window spacing for Earth–Jupiter, torch trip times).
