@@ -9,9 +9,10 @@
     "build": "vite build",
     "build:standalone": "vite build --config vite.standalone.config.js",
     "preview": "vite preview",
-    "validate": "node scripts/validate-astro.mjs && node scripts/validate-nbody.mjs && node scripts/validate-maneuver.mjs",
+    "validate": "node scripts/validate-astro.mjs && node scripts/validate-nbody.mjs && node scripts/validate-maneuver.mjs && node scripts/validate-porkchop.mjs",
     "validate:nbody": "node scripts/validate-nbody.mjs",
     "validate:maneuver": "node scripts/validate-maneuver.mjs",
+    "validate:porkchop": "node scripts/validate-porkchop.mjs",
     "fetch-data": "node scripts/fetch-data.mjs",
     "fetch-belt": "node scripts/fetch-belt.mjs"
   },

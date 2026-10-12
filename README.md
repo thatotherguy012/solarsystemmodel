@@ -46,6 +46,11 @@ After changing the code, regenerate the file with `npm run build:standalone`.
   engines to let a ship drift; command several ships at once with shift-click; undo any order.
 - **The real asteroid belt**: every known asteroid larger than about 10 km (7,674 of them, JPL data) moving on its true
   orbit, coloured by zone, with the Kirkwood gaps, the Hilda group and the two Jupiter Trojan clouds.
+- **Story tools**: milestones derived from every route on the timeline (departures, flips, flybys, close approaches,
+  course changes), a Markdown **situation report** for any date, and a **light-lag view** showing where an observer's
+  sensors see everything else right now.
+- **Launch windows**: a porkchop plot of coasting transfers (total Δv by departure date and flight time, with the
+  windows listed) and the trip-time curve of a torch ship for comparison.
 - **Simple or Full detail**: Simple mode answers the everyday questions in plain language (where is it, what is it doing,
   how far, how long until a signal gets there, when does it arrive); Full mode shows every technical table.
 - **Your own objects** — ships, fleets, stations, habitats, bases, probes — with five motion models:
@@ -93,9 +98,10 @@ npm run dev          # start the dev server (http://localhost:5173)
 npm run build        # production build into dist/ (works from any sub-path)
 npm run build:standalone  # single-file build into standalone/SolarSystem.html (runs from disk)
 npm run preview      # serve the production build locally
-npm run validate     # numeric checks: astrodynamics core (vs JPL Horizons), N-body module, torch maneuvers
+npm run validate     # numeric checks: astrodynamics core (vs JPL Horizons), N-body, torch maneuvers, launch windows
 npm run validate:nbody     # only the N-body checks (integrator, targeting, flybys, parking orbits, gravity audit)
 npm run validate:maneuver  # only the constant-thrust rendezvous / intercept checks
+npm run validate:porkchop  # only the launch-window (porkchop) checks
 npm run fetch-data   # re-download small-body (SBDB) and moon (Horizons) data into src/data/
 npm run fetch-belt   # re-download the asteroid-belt cloud (SBDB query: every asteroid with H < 13) into src/data/belt.json
 ```
@@ -250,6 +256,66 @@ acceleration or fly that leg ballistic).
 The straight-line distance and one-way light time at departure are always shown. **Create ship from this plan**
 opens the editor with a two-stop route filled in.
 
+### Launch windows
+
+**Tools ▾ → Travel planner → Launch windows** answers “when should my ship leave?”. It has two charts.
+
+![Earth → Mars launch windows 2027–2029: porkchop plot of total Δv with the best transfer marked, hover read-out and the list of windows](docs/screenshots/09-launch-windows-porkchop.jpg)
+
+#### Coasting ships: the porkchop plot
+
+Each point of the plot is one possible coasting (ballistic) trip: leave on the date along the bottom, fall freely
+around the Sun for the flight time on the left, arrive. The colour is what that trip costs — **dark is cheap**, bright
+yellow is expensive or off the scale. Cheap trips bunch into dark islands: these are the **launch windows**. The plot
+gets its name from their shape.
+
+The cost is the **total Δv**: the burn that throws the ship out of a circular parking orbit at departure plus the burn
+that captures it into a parking orbit at the destination (300 km for rocky planets and large moons, 10% of the radius
+for gas giants, half the radius for small bodies, a station's own orbit when you leave from a station — the same rules
+as ships' ballistic legs; you can change both altitudes). The **Colour by** menu also shows the departure v∞, the
+arrival v∞ (the leftover speed relative to the planet once far from it) or the departure burn alone.
+
+Why windows? A coasting ship spends months on a Sun-centred orbit, so it can only leave when the target will be at the
+right place when it gets there. That geometry repeats once per **synodic period**, the time the two planets take to
+return to the same positions relative to each other: about **every 26 months for Earth and Mars**, about **every
+13 months for Earth and Jupiter** (Jupiter moves so slowly that Earth laps it every year and a month). A window usually
+has two lobes: short trips that go less than halfway round the Sun and long trips that go more than halfway. Trips of
+almost exactly half an orbit (180°) are left grey: their orbital plane is undefined and they would need an enormous
+plane change.
+
+How to use it:
+
+- Choose **From** and **To** (any body or your own objects), the first departure date (default: the current simulation
+  date), the **span** (6 months to 5 years), the range of flight times (default 60–600 days) and the grid (default
+  72 × 60 = 4,320 transfers). The plot computes in the background in a fraction of a second; a progress bar and
+  **Cancel** appear for large grids.
+- **Hover** for the numbers of any trip: departure and arrival dates, flight time, both v∞, both burns and the total Δv.
+  The white ring marks the cheapest trip (“best: 2028-11-23, 300 d, 5.86 km/s” for Earth → Mars).
+- **Click** a point to select it: the planner switches to its ballistic mode with that departure and duration, refines
+  the trip with the full N-body model and shows the same numbers a ship would (burns, closest approaches, impacts).
+  **Create ship from this plan** turns it into a route.
+- **Next windows** lists the cheapest trip of each window in the span (one per synodic period), with **Jump to date**
+  (moves the simulation there) and **Use** (selects it). A window flagged *span start* / *span end* probably continues
+  outside the span.
+
+**Speed versus accuracy:** to compute thousands of trips in a moment the plot uses two-body transfers (Lambert's
+problem with the Sun's gravity only). The trip you select is refined in the Sun + 8 planets N-body model, so its
+numbers can differ slightly from the colour under the pointer.
+
+#### Torch ships: the window curve
+
+The second chart shows a constant-thrust ship's trip time (and peak speed) for every departure date in the span, for
+the chosen acceleration (default 0.3 g) in **rendezvous** mode (flip and brake to match the target's speed) or
+**intercept** mode (burn all the way). Its point: launch windows hardly matter to torch ships. At 0.3 g, Earth → Mars
+takes 4–8 days whenever you leave — the spread is just the changing distance — while the cheapest coasting trip over
+the same years swings from about 6 km/s to over 25 km/s. Torch ships cross the inner system in days, so the planets
+barely move during the trip and nothing has to line up. Click the curve to plan that flight (the planner's
+brachistochrone mode, with its gravity audit) and create a ship from it. The curve uses the gravity-free constant-thrust
+solution starting from the departure body's own velocity; below about 0.01 g it is only indicative.
+
+`npm run validate:porkchop` checks the launch-window maths (Earth–Mars minimum 5.5–6.5 km/s in the late-2028
+window, synodic periods, window spacing for Earth–Jupiter, torch trip times).
+
 ### Measuring
 
 Select an object and press **Measure to…**, then click a second object: a line with the distance (AU, million km)
@@ -260,6 +326,70 @@ time from the selection to the Sun, all planets, the Moon, sibling moons and eve
 
 **＋ Event** (above the timeline) adds a story event at the current time; **Events…** (or **Tools ▾ → Story events**) manages them (date, title,
 notes, colour). They appear as ticks on the timeline strip; click a tick to jump there.
+
+### Story tools
+
+Three tools for working with the scenario as a story: milestones that come straight out of the routes, a
+plain-text situation report, and a view of what an observer can actually see given the speed of light.
+
+#### Automatic milestones
+
+Every route yields its own milestones: **departures** (“Ardent departs Earth”), **flips** (the turnover of a
+brachistochrone leg at its midpoint, or of a torch leg at its computed flip time), **flybys**, **close approaches** to a planet inside two sphere-of-influence
+radii, **impacts**, **arrivals** (an intercept is marked with its closing speed), **course changes** and **engines off**
+(from the command bar). Ballistic legs use their N-body results (closest approaches, impacts, v∞ and
+burns); straight and constant-thrust legs are sampled along the actual path for approaches to every planet that is
+not an endpoint. Milestones are drawn as hollow ticks in the object's colour below the story-event ticks on the
+timeline (rectangles for departures and arrivals, a diamond for a flip, circles for flybys, approaches and impacts).
+Hover a tick for the details (all milestones under the pointer are listed), click it to jump there. The
+**Auto milestones** button next to the timeline's event buttons hides them (remembered in this browser). The Events dialog
+lists them read-only under **Derived milestones**, each with a Jump button. Milestones are recomputed (debounced)
+whenever a route changes or a background N-body result arrives, and they are never saved to the scenario: story
+events stay yours.
+
+![Auto milestones on the timeline: story events above, hollow milestone ticks below, the flip tooltip](docs/screenshots/milestones-timeline.jpg)
+
+#### Situation report
+
+**Tools ▾ → Situation report…** writes a Markdown report for any date (default: the current
+simulation time). Choose the custom objects and natural bodies to include (by default every custom object, the
+Sun, Earth, and the bodies the objects are at or travelling between), the distance unit (AU with million km or km,
+or AU only), the speed unit (km/s, m/s or % of light speed), the look-ahead window (30 days by default) and whether
+the pair table lists all pairs or only pairs with a custom object. The report contains:
+
+- one block per custom object with a plain-language status — “En route Earth → Mars, arrives 2026-10-28 12:58 UTC
+  (in 4.5 d), 508 km/s; accelerating at 0.30 g, flip in 1.3 d”, “In orbit around Earth (altitude 35,793 km,
+  period 23.93 h)”, “On the surface of Mars”, “Parked at Ceres”, “…; engines off, drifting (ballistic coast)” —
+  its heliocentric position, its distance from the Sun and from Earth (AU and million km) and its signal delay to
+  Earth (one way and round trip);
+- a table of the included natural bodies;
+- a table of distances and one-way signal delays between every pair of included objects and bodies;
+- the derived milestones and the story events in the look-ahead window.
+
+The tables are padded so they line up in a plain-text editor. **Copy to clipboard** or **Download .md**
+(`<scenario> situation report <date>.md`). The numbers are the ones the inspector shows (same positions, same
+light-time convention: straight-line distance / c).
+
+#### Light-lag view
+
+Turn on **Light-lag view** (chip above the 3D view, next to the visibility chips) and select an observer — a ship, a station, a planet. Every
+other visible custom object then gets a ghost marker (a broken ring) at its *retarded* position: where it was when
+the light now reaching the observer left it. The delay τ solves τ = |r<sub>obj</sub>(t − τ) − r<sub>obs</sub>(t)| / c
+(four fixed-point passes). A faint line joins each ghost to the object's true position and a label says how old the
+sighting is (“seen 5 min 8 s ago”); **+ planets** adds ghosts for the eight planets. Ghosts follow the camera's
+focus-relative origin and update every frame while time runs. An object that ceased to exist less than τ ago is
+still seen (“gone since”); one created less than τ ago is not seen yet.
+
+This is what the observer's telescopes, radar and passive sensors would show at that moment — the only picture a
+captain has. In a hard-SF space battle it is the constraint that shapes tactics: a ship 0.6 AU away is seen where it
+was five minutes ago, and at 800 km/s that is 240,000 km behind where it really is; an order sent to it arrives
+another five minutes later.
+
+![Light-lag view from Earth: Ardent at its flip (true position, centre) and its ghost, seen 5 min 8 s ago, 236,000 km back along its path](docs/screenshots/light-lag-view.jpg)
+
+Code: `src/sim/milestones.js`, `src/sim/report.js`, `src/sim/lightlag.js` (no DOM); `src/ui/timelineMilestones.js`,
+`src/ui/milestonesSection.js`, `src/ui/modals/report.js`, `src/scene/lightlag.js` (self-contained THREE objects
+and CSS2D labels); `src/ui/storyTools.js` wires them in; styles in `src/styles-story-tools.css`.
 
 ### Saving
 
@@ -406,6 +536,7 @@ scripts/fetch-belt.mjs      downloads the asteroid-belt cloud (SBDB query, H < 1
 scripts/validate-astro.mjs  numeric validation of src/astro/
 scripts/validate-nbody.mjs  numeric validation of src/astro/nbody.js
 scripts/validate-maneuver.mjs numeric validation of src/astro/maneuver.js (torch rendezvous / intercept)
+scripts/validate-porkchop.mjs numeric validation of src/sim/porkchop.js (launch windows)
 src/main.js                 bootstrap
 src/styles.css              dark theme
 src/astro/                  astrodynamics core: time, Kepler, Lambert, Lagrange, planets & Moon, N-body (nbody.js),
@@ -413,11 +544,13 @@ src/astro/                  astrodynamics core: time, Kepler, Lambert, Lagrange,
 src/data/                   catalog.js (Sun/planets table, colours, loader) + generated JSON
 src/sim/                    ephemeris (+ N-body perturbers), custom-object motion (routes, torch / drift legs,
                             waypoints), ship commands, trajectory job queue, leg physics (burns, flybys, audits),
-                            clock, store, scenario persistence
+                            milestones, situation report, light lag, launch-window grids (porkchop.js), clock,
+                            store, scenario persistence
 src/scene/                  three.js renderer, bodies, custom objects, asteroid-belt cloud, command preview, grid,
-                            starfield, measurement line
+                            starfield, measurement line, light-lag ghosts
 src/ui/                     top bar, sidebar, panels, inspector, status lines, command bar, leg info, time bar,
-                            timeline, modals (object editor, set course, planner, events, import, help), formatting
+                            timeline (+ milestones), story tools, porkchop chart, modals (object editor, set course,
+                            planner + launch windows, events, situation report, import, help), formatting
 ```
 
 ## License
@@ -439,66 +572,3 @@ CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFT
 IN THE SOFTWARE.
 
 Ephemeris data courtesy of NASA/JPL Solar System Dynamics.
-
-## Story tools
-
-Three tools for working with the scenario as a story: milestones that come straight out of the routes, a
-plain-text situation report, and a view of what an observer can actually see given the speed of light.
-
-### Automatic milestones
-
-Every route yields its own milestones: **departures** (“Ardent departs Earth”), **flips** (the turnover of a
-brachistochrone leg at its midpoint), **flybys**, **close approaches** to a planet inside two sphere-of-influence
-radii, **impacts**, and **arrivals**. Ballistic legs use their N-body results (closest approaches, impacts, v∞ and
-burns); straight and constant-thrust legs are sampled along the actual path for approaches to every planet that is
-not an endpoint. Milestones are drawn as hollow ticks in the object's colour below the story-event ticks on the
-timeline (rectangles for departures and arrivals, a diamond for a flip, circles for flybys, approaches and impacts).
-Hover a tick for the details (all milestones under the pointer are listed), click it to jump there. The
-**Auto milestones** button next to the event buttons hides them (remembered in this browser). The Events dialog
-lists them read-only under **Derived milestones**, each with a Jump button. Milestones are recomputed (debounced)
-whenever a route changes or a background N-body result arrives, and they are never saved to the scenario: story
-events stay yours.
-
-![Auto milestones on the timeline: story events above, hollow milestone ticks below, the flip tooltip](docs/screenshots/milestones-timeline.jpg)
-
-### Situation report
-
-**Situation report…** (top bar, next to Events) writes a Markdown report for any date (default: the current
-simulation time). Choose the custom objects and natural bodies to include (by default every custom object, the
-Sun, Earth, and the bodies the objects are at or travelling between), the distance unit (AU with million km or km,
-or AU only), the speed unit (km/s, m/s or % of light speed), the look-ahead window (30 days by default) and whether
-the pair table lists all pairs or only pairs with a custom object. The report contains:
-
-- one block per custom object with a plain-language status — “En route Earth → Mars, arrives 2026-10-28 12:58 UTC
-  (in 4.5 d), 508 km/s; accelerating at 0.30 g, flip in 1.3 d”, “In orbit around Earth (altitude 35,793 km,
-  period 23.93 h)”, “On the surface of Mars”, “Parked at Ceres”, “…; engines off, drifting (ballistic coast)” —
-  its heliocentric position, its distance from the Sun and from Earth (AU and million km) and its signal delay to
-  Earth (one way and round trip);
-- a table of the included natural bodies;
-- a table of distances and one-way signal delays between every pair of included objects and bodies;
-- the derived milestones and the story events in the look-ahead window.
-
-The tables are padded so they line up in a plain-text editor. **Copy to clipboard** or **Download .md**
-(`<scenario> situation report <date>.md`). The numbers are the ones the inspector shows (same positions, same
-light-time convention: straight-line distance / c).
-
-### Light-lag view
-
-Turn on **Light-lag view** (chip above the 3D view) and select an observer — a ship, a station, a planet. Every
-other visible custom object then gets a ghost marker (a broken ring) at its *retarded* position: where it was when
-the light now reaching the observer left it. The delay τ solves τ = |r<sub>obj</sub>(t − τ) − r<sub>obs</sub>(t)| / c
-(four fixed-point passes). A faint line joins each ghost to the object's true position and a label says how old the
-sighting is (“seen 5 min 8 s ago”); **+ planets** adds ghosts for the eight planets. Ghosts follow the camera's
-focus-relative origin and update every frame while time runs. An object that ceased to exist less than τ ago is
-still seen (“gone since”); one created less than τ ago is not seen yet.
-
-This is what the observer's telescopes, radar and passive sensors would show at that moment — the only picture a
-captain has. In a hard-SF space battle it is the constraint that shapes tactics: a ship 0.6 AU away is seen where it
-was five minutes ago, and at 800 km/s that is 240,000 km behind where it really is; an order sent to it arrives
-another five minutes later.
-
-![Light-lag view from Earth: Ardent at its flip (true position, centre) and its ghost, seen 5 min 8 s ago, 236,000 km back along its path](docs/screenshots/light-lag-view.jpg)
-
-Code: `src/sim/milestones.js`, `src/sim/report.js`, `src/sim/lightlag.js` (no DOM); `src/ui/timelineMilestones.js`,
-`src/ui/milestonesSection.js`, `src/ui/modals/report.js`, `src/scene/lightlag.js` (self-contained THREE objects
-and CSS2D labels); `src/ui/storyTools.js` wires them in; styles in `src/styles-story-tools.css`.
