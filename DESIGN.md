@@ -576,3 +576,101 @@ Saturn 1.94×, Earth 1×, Mars 0.83×, Mercury 0.75×, Ceres and smaller 0.45×)
 
 **F.** `npm run validate` runs both validation scripts (`validate:nbody` alone); README and screenshots updated;
 `standalone/SolarSystem.html` regenerated.
+
+
+---
+
+## Version 3 (summary of changes after v2)
+
+**A. Asteroid-belt cloud** (`scripts/fetch-belt.mjs`, `npm run fetch-belt`, `src/data/belt.json`, `src/scene/belt.js`).
+- The SBDB Query API (`sb-kind=a`, `H|LT|13`, `full-prec=true`) returns ~15,200 asteroids brighter than H = 13 (about
+  10 km and larger for albedo 0.1); about half are trans-Neptunian. The cloud keeps the 7,674 with a < 6 AU (Mars-crossers,
+  main belt, Cybeles, Hildas, both Jupiter Trojan clouds). `belt.json` (~530 KB): `{ source, query, fetchedAt, count,
+  epoch, fields, names, data: [[a, e, iDeg, omDeg, wDeg, maDeg, H, epoch?], ...] }`, 6 significant digits, the epoch only
+  when it differs from the common one. It is loaded as a separate chunk (dynamic import).
+- `THREE.Points` (1.5 px, opacity 0.7, colour by zone: inner < 2.5 AU, middle, outer > 2.82 AU, Hildas ~4 AU, Trojans
+  5.2 AU, slightly brighter for larger H-bright objects). Positions are recomputed on the CPU (typed arrays; Kepler by
+  Newton iteration, perifocal vectors precomputed) only when the simulation time changes, every other frame during fast
+  playback (≥ 1 day/s); they are stored relative to the focus at compute time (float32 precision) and offset each frame.
+- Toggles: **Belt** chip (default on, saved in the scenario view); View menu: **Kirkwood gaps** (dashed labelled rings at
+  2.06, 2.50, 2.82, 2.95, 3.27 AU) and **Belt at average distance** (`beltMean`: each asteroid drawn at its semi-major
+  axis in its true direction). The second option exists because the gaps are gaps in semi-major axis: eccentricity
+  (typically 0.1–0.2) smears them out in a snapshot of true positions. Hovering a dot shows its name, a, H and zone.
+- View menu "Asteroid belt, top-down (13 AU)". Help/README explain that the belt is empty space for navigation (total
+  mass ~4% of the Moon's; kilometre-size bodies millions of km apart) and that density matters for settlement and mining.
+
+**B. Command mode** (`src/sim/commands.js`, `src/ui/commandBar.js`, `src/ui/modals/setCourse.js`; `src/astro/maneuver.js`
+was supplied, validated by `scripts/validate-maneuver.mjs`).
+- Drives: custom objects of type ship / fleet / probe carry `drive: { kind: 'torch', accelG } | { kind: 'coast' } |
+  { kind: 'none' }` (new objects: torch 0.3 g; v1/v2 objects infer it from their route: brachistochrone X g → torch X g,
+  ballistic → coast, otherwise torch 0.3 g). The example's Ardent (torch 0.3 g), Hermes (coast), Perimeter Watch (torch
+  0.5 g) and Far Horizon (torch 0.01 g) have drives.
+- Per-leg profiles: a stop's `leg: { profile, mode, accelG }` defines the leg arriving at it (else the route's `profile` /
+  `accelG`). Profiles: `thrust` (new), `ballistic`, `brachistochrone`, `linear`, `drift` (new). `mode` is `rendezvous` |
+  `intercept` for thrust and ballistic legs.
+- `thrust` legs: `planManeuver(mode, P0, V0, t0, targetFn, a, gravity)` from the departure stop's state (a body stop: the
+  body's state; a waypoint: its stored state; a hold: the held motion's state; a custom object: its position and
+  velocity) to the destination's `targetFn` (body: uncached ephemeris state; custom object: position + velocity; point:
+  v = 0). `legData` solves the kinematic (gravity-free) problem immediately (~1–3 ms) and queues the gravity refinement in
+  the trajectory job queue (`cachePerturbers(perturbers, t0, t0 + 1.5 T)`, `makeAccel({ endpointIds })` with the same
+  endpoint mapping as ballistic legs), keyed by the leg definition (t0, departure state, target, mode, acceleration,
+  endpoints; a custom target adds its position at the kinematic arrival so a change of its trajectory re-solves). The
+  path is drawn from the kinematic solution and redrawn when the refined samples arrive; positions come from
+  `stateAt(jd)`. The arrival time of a thrust leg is always solved; commands and the route editor store the refined arrival
+  (computed synchronously, 10–80 ms, cached), so the stored stop data reproduces the same solution on reload.
+- Stops: waypoint `{ ref: null, kind: 'waypoint', x, y, z, vx, vy, vz, arriveJd, departJd, aborted?, leg? }` (a recorded
+  ship state; `aborted` keeps the stop a cut leg was flying to, so that leg is evaluated exactly as before up to the cut);
+  hold `{ ref: null, kind: 'hold', motion, arriveJd: null, departJd }` (first stop only: the object's previous non-route
+  motion — orbit, Lagrange point, … — until the first command). Zero-velocity waypoints hold position; others coast
+  two-body during a dwell.
+- Engines off: a route that ends at a waypoint with non-zero velocity, or with an intercept leg (the ship flies through
+  the target), drifts afterwards: N-body (Sun + 8 planets, no endpoint exclusion, impacts tracked) for 4 years from the
+  drift start in a background job, two-body beyond and while it computes. The drift is drawn as a dimmer dashed line
+  three years ahead. A drift that is interrupted by a later command becomes a `drift` leg into a new waypoint.
+- Mid-course logic (`courseBase`): at t_now, parked at a stop → depart from that stop now (body state; parking-orbit
+  burns for coast ships); on a leg → keep stops 0..i, append a waypoint at the leg's state at t_now (arrive = depart =
+  t_now, `aborted` = the old destination); drifting → close the last stop at its arrival and append a `drift`-leg waypoint
+  snapshot; not on a route → a hold stop (co-located with a planet → that planet as the stop). Then append the destination:
+  torch → `planManeuver`; coast → two-body Lambert over 8 durations from 0.3× to 2.5× the Hohmann-like time between the
+  current and target radii, minimum burn (departure + arrival burn for rendezvous, departure burn for intercept; burns via
+  `endBurn`, i.e. from / into parking orbits at bodies), refined by the existing N-body targeting after apply.
+  `routePhase` treats a zero-dwell intermediate stop as already passed at its instant, so the inspector shows the new leg
+  immediately.
+- Command bar (bottom centre of the view, mirrored in the inspector for ships with a drive): **Go to** (G, rendezvous),
+  **Intercept** (T), **Cut engines** (truncate at t_now, end at a waypoint with the current velocity), **Drive: 0.3 g ✎**
+  (popover: torch acceleration / coast / none), **Set course…** (dialog: destination incl. a typed point, rendezvous or
+  intercept, torch by acceleration or by arrival date via `solveRendezvousForTime`, or ballistic with a duration scan;
+  live preview). Targeting mode (`store.command`): crosshair; hovering a body / ship / station draws the kinematic preview
+  path (dashed yellow) and a tooltip (torch: arrival, trip time, peak speed, Δv, closing speed; coast: burn now, arrival,
+  arrival burn or closing speed); empty space targets the ray's intersection with the heliocentric z = 0 plane (marker;
+  ≤ 200 AU); click applies with an Undo toast (restores the affected objects); Esc cancels. Shift-click builds a
+  multi-selection (`store.multiSelection`, yellow rings); commands apply to every selected ship with one Undo.
+- Inspector status line for every selection ("Under thrust toward Mars · flip in 2.1 d · arrives 2187-05-14 (in 4.3 d) ·
+  612 km/s now", "Under thrust toward Hermes (intercept) · … · closing at 1,155 km/s", "Engines off · drifting at
+  31 km/s", "En route to Ceres (coasting) · …", "Parked at Earth", "In orbit around Mars", …).
+
+**C. Deselect and pan.** Esc (after menus, popovers, targeting and measuring) and a click on empty space clear the
+selection; the camera keeps following its focus ("Following: Jupiter · Follow Sun" pill above the view). OrbitControls
+panning is on (right-drag, shift + left-drag, `screenSpacePanning`); `controls.target` is an offset from the focus-relative
+origin, so a panned view keeps following the focused body through time. Double-click on the followed object or `C`
+re-centres (animated); a focus change, View presets (inner / belt / outer / Kuiper / frame) reset the pan; drag inertia
+is cleared at the start of every camera move.
+
+**D. Friendlier UI.** Top bar: **＋ Add**, **Scenario ▾** (Import, Export, New, Example), **Tools ▾** (Travel planner,
+Story events), **Simple / Full** (localStorage `ssm.ui.detail`, default Simple), Help. Chips: Orbits, Labels, Moons,
+Asteroids, Comets, Custom, Belt; Grid and Kirkwood gaps moved to the View menu (checkbox items). First-run tip strip
+(dismissal remembered in `ssm.ui.tipDismissed`). Simple inspector: status line, distances from the Sun and Earth (AU and
+M km), signal delay to Earth (and to the other end of a measurement), speed, altitude above the parent, and for ships the
+trip (destination, ETA, peak speed, delta-v (Δv), burns, closing speed); the technical tabs are behind "Details" (state
+remembered). Full mode shows the tabs directly. Object form in Simple mode: name, type, colour, drive, starting location
+(body picker or "Click on map", which closes the form, takes a click on a body or the ecliptic and reopens it), notes;
+everything else under "Advanced". The route editor gains per-leg profile selects (torch rendezvous / intercept with an
+optional acceleration, ballistic, ballistic intercept, brachistochrone, linear) and shows course-change waypoints and
+holds as read-only rows. Labels: "signal delay" instead of light time, "excess speed (v∞)", "delta-v (Δv)". Every icon
+button has a tooltip.
+
+**E.** `npm run validate` runs the three validation scripts; README (belt, command mode, panning / deselect, Simple /
+Full, scenario format additions) and two screenshots (`docs/screenshots/07-belt-kirkwood-trojans.jpg`,
+`08-command-mode-preview.jpg`); `standalone/SolarSystem.html` regenerated. Scenario format stays version 1: `drive`, stop
+`leg`, waypoint and hold stops and `view.toggles.belt / kirkwood / beltMean` are additive (an older build ignores them and
+would fly such routes with the route-level profile).
