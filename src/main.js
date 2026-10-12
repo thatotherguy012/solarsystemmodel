@@ -11,6 +11,8 @@ import { initSidebar } from './ui/sidebar.js';
 import { initInspector } from './ui/inspector.js';
 import { initTimebar } from './ui/timebar.js';
 import { initTimeline } from './ui/timeline.js';
+import { initPanels } from './ui/panels.js';
+import { onTrajectoryUpdate } from './sim/trajectory.js';
 import { toast } from './ui/toast.js';
 import { openObjectEditor } from './ui/modals/objectEditor.js';
 import { openPlanner } from './ui/modals/planner.js';
@@ -72,11 +74,18 @@ const app = {
 };
 
 app.view = createRenderer(document.getElementById('canvas-host'), { onPick: (id) => app.pick(id) });
+// N-body trajectories arrive in the background: drop memoized custom-object positions (they were evaluated on the
+// two-body arc) and redraw affected route paths. Registered before the UI so it runs before the inspector refresh.
+onTrajectoryUpdate(() => {
+  store.get().ctx.posCache.clear();
+  app.view.refreshPaths();
+});
+initPanels(app);
 app.sidebar = initSidebar(app);
 initTopbar(app);
 initInspector(app);
 initTimebar(app);
-initTimeline(app);
+app.timeline = initTimeline(app);
 
 // ---- overlays: camera info + measurement banner
 const camInfo = document.getElementById('camera-info');

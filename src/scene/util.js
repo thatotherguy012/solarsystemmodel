@@ -28,13 +28,13 @@ export function glowTexture() {
   });
 }
 
-/** Thin ring outline (selection indicator). */
-export function ringTexture(color = '#5aa9ff') {
+/** Ring outline (selection indicator, flyby markers). `lineWidth` is in texture pixels (texture is 128 px). */
+export function ringTexture(color = '#5aa9ff', lineWidth = 5) {
   return canvasTexture(128, (g, s) => {
     g.strokeStyle = color;
-    g.lineWidth = 5;
+    g.lineWidth = lineWidth;
     g.beginPath();
-    g.arc(s / 2, s / 2, s / 2 - 5, 0, Math.PI * 2);
+    g.arc(s / 2, s / 2, s / 2 - lineWidth / 2 - 1, 0, Math.PI * 2);
     g.stroke();
   });
 }

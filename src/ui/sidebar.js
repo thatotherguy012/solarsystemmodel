@@ -1,9 +1,14 @@
-// Left sidebar: object browser with collapsible groups, moons nested under planets, search filter. §8.
-import { store, deleteObject } from '../sim/store.js';
+// Left sidebar: object browser with collapsible groups, moons nested under planets, search filter, and per-object
+// visibility (eye toggles; hiding a planet also hides its moons; groups have show all / hide all). §8.
+import { store, deleteObject, hiddenSetOf, setHidden, toggleHidden } from '../sim/store.js';
 import { allBodies, moonsOf, getBody } from '../sim/ephemeris.js';
-import { TYPE_GLYPHS, existsAt } from '../sim/custom.js';
+import { TYPE_GLYPHS, existsAt, nameOf } from '../sim/custom.js';
 import { confirmModal } from './modal.js';
 import { esc } from './format.js';
+
+const EYE_PATH = 'M1.2 8S3.7 3.3 8 3.3 14.8 8 14.8 8 12.3 12.7 8 12.7 1.2 8 1.2 8Z';
+const EYE = `<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="${EYE_PATH}" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="2.1" fill="currentColor"/></svg>`;
+const EYE_OFF = `<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="${EYE_PATH}" fill="none" stroke="currentColor" stroke-width="1.3" opacity="0.6"/><path d="M2.6 13.4 13.4 2.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
 
 const GROUPS = [
   { key: 'custom', title: 'Custom objects' },
@@ -27,6 +32,8 @@ export function initSidebar(app) {
   /** row elements by id for highlight / filter */
   let rows = new Map();
 
+  const eyeBtn = (id) => `<button class="eye" data-eye="${esc(id)}" aria-pressed="false">${EYE}</button>`;
+
   function bodyRow(b, depth = 0) {
     const moons = moonsOf(b.id);
     const hasMoons = moons.length > 0;
@@ -39,6 +46,7 @@ export function initSidebar(app) {
           <span class="dot" style="background:${b.color}"></span>
           <span class="row-name">${esc(b.name)}</span>${extra}
           ${hasMoons ? `<span class="row-count">${moons.length}</span>` : ''}
+          ${eyeBtn(b.id)}
         </div>
         ${hasMoons ? `<div class="children" ${exp ? '' : 'hidden'}>${moons.map((m) => bodyRow(getBody(m), depth + 1)).join('')}</div>` : ''}
       </div>`;
@@ -57,8 +65,47 @@ export function initSidebar(app) {
             <button class="icon-btn small" data-edit="${esc(o.id)}" title="Edit" aria-label="Edit ${esc(o.name)}">✎</button>
             <button class="icon-btn small" data-del="${esc(o.id)}" title="Delete" aria-label="Delete ${esc(o.name)}">🗑</button>
           </span>
+          ${eyeBtn(o.id)}
         </div>
       </div>`).join('');
+  }
+
+  /** Ids a group's "hide all" hides (top-level rows; moons follow their planet) and "show all" shows (every row). */
+  function groupIds(key, all) {
+    if (key === 'custom') return store.get().objects.map((o) => o.id);
+    const g = GROUPS.find((x) => x.key === key);
+    const top = bodies.filter((b) => g.types.includes(b.type)).map((b) => b.id);
+    return all ? top.flatMap((id) => [id, ...moonsOf(id)]) : top;
+  }
+
+  /** Reflect the hidden set on the rows: dimmed rows, eye icons, tooltips. */
+  function updateHidden() {
+    const hidden = hiddenSetOf();
+    for (const [id, r] of rows) {
+      const b = getBody(id);
+      const own = hidden.has(id);
+      const viaParent = !own && b?.type === 'moon' && hidden.has(b.parent);
+      r.classList.toggle('user-hidden', own || viaParent);
+      const eye = r.querySelector('.eye');
+      if (!eye) continue;
+      const name = b ? b.name : nameOf(id, store.get().ctx);
+      const state = viaParent ? 'parent' : own ? 'hidden' : 'shown';
+      if (eye.dataset.state === state) continue;
+      eye.dataset.state = state;
+      eye.innerHTML = state === 'shown' ? EYE : EYE_OFF;
+      eye.setAttribute('aria-pressed', String(state !== 'shown'));
+      eye.disabled = viaParent;
+      const label = viaParent ? `Hidden with ${getBody(b.parent)?.name ?? 'its planet'}` : own ? `Show ${name}` : `Hide ${name}${b && moonsOf(id).length ? ' and its moons' : ''}`;
+      eye.title = label;
+      eye.setAttribute('aria-label', label);
+    }
+    for (const sec of host.querySelectorAll('.group')) {
+      const key = sec.dataset.group;
+      const all = groupIds(key, true), top = groupIds(key, false);
+      const showBtn = sec.querySelector('[data-showall]'), hideBtn = sec.querySelector('[data-hideall]');
+      if (showBtn) showBtn.disabled = !all.some((id) => hidden.has(id));
+      if (hideBtn) hideBtn.disabled = !top.length || top.every((id) => hidden.has(id));
+    }
   }
 
   const listSig = (objects) => JSON.stringify(objects.map((o) => [o.id, o.name, o.color, o.type, o.tags]));
@@ -85,7 +132,10 @@ export function initSidebar(app) {
             <button class="group-toggle" data-group-toggle="${g.key}" aria-expanded="${!collapsed}">
               <span class="caret">${collapsed ? '▸' : '▾'}</span>${g.title}<span class="group-count">${count}</span>
             </button>
-            ${g.key === 'custom' ? '<button class="btn tiny" data-new>＋ new</button>' : ''}
+            <span class="group-tools">
+              ${g.key === 'custom' ? '<button class="btn tiny" data-new>＋ new</button>' : ''}
+              <button class="group-eye" data-showall="${g.key}" title="Show all (${esc(g.title)})" aria-label="Show all ${esc(g.title)}">${EYE}</button><button class="group-eye" data-hideall="${g.key}" title="Hide all (${esc(g.title)})" aria-label="Hide all ${esc(g.title)}">${EYE_OFF}</button>
+            </span>
           </div>
           <div class="group-body" ${collapsed ? 'hidden' : ''}>${inner}</div>
         </section>`;
@@ -95,6 +145,7 @@ export function initSidebar(app) {
     highlight();
     applyFilter();
     updateExistence();
+    updateHidden();
   }
 
   function highlight() {
@@ -143,6 +194,12 @@ export function initSidebar(app) {
 
   host.addEventListener('click', async (ev) => {
     const t = ev.target;
+    const eye = t.closest('[data-eye]');
+    if (eye) { ev.stopPropagation(); if (!eye.disabled) toggleHidden(eye.dataset.eye); return; }
+    const showAll = t.closest('[data-showall]');
+    if (showAll) { setHidden(groupIds(showAll.dataset.showall, true), false); return; }
+    const hideAll = t.closest('[data-hideall]');
+    if (hideAll) { setHidden(groupIds(hideAll.dataset.hideall, false), true); return; }
     const tw = t.closest('[data-twisty]');
     if (tw) {
       ev.stopPropagation();
@@ -208,6 +265,7 @@ export function initSidebar(app) {
       }
       if (changed.includes('search')) applyFilter();
     }
+    if (changed.includes('hiddenIds') || changed.includes('objects')) updateHidden();
     if (changed.includes('jd') || changed.includes('objects')) {
       const now = performance.now();
       if (changed.includes('objects') || now - lastExistUpdate > 400) { lastExistUpdate = now; updateExistence(); }

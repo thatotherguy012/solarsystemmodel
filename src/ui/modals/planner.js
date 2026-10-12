@@ -1,18 +1,22 @@
-// Travel planner: brachistochrone (given accel or duration) and ballistic Lambert transfers, with a
-// duration scan for cheap ballistic windows. §8.
-import { GM_SUN, G0_M_S2, LIGHT_S_PER_AU, mS2ToAuDay2, auDay2ToMS2, auDayToKmS } from '../../astro/constants.js';
-import { vsub, vlen, vdist } from '../../astro/vec3.js';
-import { lambert } from '../../astro/lambert.js';
-import { stateToElements } from '../../astro/kepler.js';
+// Travel planner: brachistochrone (given acceleration or duration) with a gravity audit, and ballistic transfers
+// refined in the Sun + 8 planets N-body field (patched-conic endpoints) with parking-orbit burns, plus a duration
+// scan for cheap ballistic windows. §8 (v2). Plans are evaluated as temporary one-leg routes so the numbers are
+// exactly those a ship created from the plan will show.
+import { G0_M_S2, LIGHT_S_PER_AU, AU_KM, mS2ToAuDay2, auDay2ToMS2, auDayToKmS } from '../../astro/constants.js';
+import { vdist } from '../../astro/vec3.js';
 import { formatJd, parseDateToJd } from '../../astro/time.js';
 import { brachistochroneTime } from '../../astro/lambert.js';
 import { store } from '../../sim/store.js';
-import { positionOf, velocityOf, nameOf, solveBrachistochroneTime } from '../../sim/custom.js';
+import { positionOf, nameOf, solveBrachistochroneTime, legData } from '../../sim/custom.js';
+import { onTrajectoryUpdate, cancelGroup } from '../../sim/trajectory.js';
+import { ballisticSummary, stopGravity } from '../../sim/legPhysics.js';
 import { openModal, h } from '../modal.js';
 import { refPicker } from '../components.js';
-import { fmtDist, fmtKmS, fmtSpeedKmS, fmtG, fmtDuration, fmtLightTime, fmtAu, fmtMS2, esc } from '../format.js';
+import { ballisticHtml, auditHtml } from '../legInfo.js';
+import { fmtDist, fmtKmS, fmtSpeedKmS, fmtG, fmtDuration, fmtLightTime, fmtAu, fmtMS2, fmtMkm, esc } from '../format.js';
 
 const SCAN_DAYS = [60, 90, 120, 150, 180, 210, 240, 300, 365, 450, 550, 730, 900, 1096];
+const GROUP = 'planner';
 
 /**
  * @param {Object} app
@@ -24,7 +28,7 @@ export function openPlanner(app, init = {}) {
     from: init.from && init.from !== init.to ? init.from : 'earth',
     to: init.to ?? (init.from === 'mars' ? 'earth' : 'mars'),
     departStr: formatJd(s0.jd).replace(' UTC', ''),
-    mode: 'accel', accelG: '0.3', durationDays: '120',
+    mode: 'accel', accelG: '0.3', durationDays: '120', depParkStr: '', arrParkStr: '',
   };
   if (state.from === state.to) state.to = state.from === 'earth' ? 'mars' : 'earth';
 
@@ -36,17 +40,20 @@ export function openPlanner(app, init = {}) {
       <label>Mode<select data-k="mode">
         <option value="accel">Brachistochrone — given acceleration</option>
         <option value="duration">Brachistochrone — given duration</option>
-        <option value="ballistic">Ballistic (Lambert) — given duration</option>
+        <option value="ballistic">Ballistic (N-body) — given duration</option>
       </select></label>
       <label data-f="accelWrap">Acceleration (g)<input data-k="accelG" class="mono" inputmode="decimal"></label>
       <label data-f="durWrap">Duration (days)<input data-k="durationDays" class="mono" inputmode="decimal"></label>
+      <label data-f="depParkWrap" title="Circular parking orbit the departure burn starts from (blank = default for the body)">Departure parking altitude (km)<input data-k="depParkStr" class="mono" inputmode="decimal"></label>
+      <label data-f="arrParkWrap" title="Circular orbit the capture burn ends in (blank = default for the body)">Arrival parking altitude (km)<input data-k="arrParkStr" class="mono" inputmode="decimal"></label>
     </div>
     <div class="planner-out" data-f="out" aria-live="polite"></div>
     <div data-f="scan"></div>
   </div>`);
-  const foot = h(`<div class="btn-row"><span class="muted small">Brachistochrone ignores solar gravity; ballistic ignores planetary gravity (no capture burns).</span><span class="spacer"></span>
+  const foot = h(`<div class="btn-row"><span class="muted small">Ballistic: Sun + 8 planets N-body, patched-conic ends. Brachistochrone: straight line with a gravity audit.</span><span class="spacer"></span>
     <button class="btn" data-a="close">Close</button><button class="btn primary" data-a="create">Create ship from this plan</button></div>`);
-  const modal = openModal({ title: 'Travel planner', body, footer: foot, wide: true });
+  let unsub = () => {};
+  const modal = openModal({ title: 'Travel planner', body, footer: foot, wide: true, onClose: () => { unsub(); cancelGroup(GROUP); } });
   const q = (sel) => body.querySelector(sel);
 
   const fromP = refPicker({ value: state.from, ariaLabel: 'From', onChange: (v) => { state.from = v; compute(); } });
@@ -68,24 +75,53 @@ export function openPlanner(app, init = {}) {
 
   function row(k, v) { return `<dt>${k}</dt><dd>${v}</dd>`; }
 
+  /** Parking altitude from a field: number, null (blank = default) or NaN (invalid). */
+  const parkVal = (str) => (String(str).trim() === '' ? null : Number(str) >= 0 ? Number(str) : NaN);
+
+  /** A temporary one-leg route evaluated with the same code as real ships (cached by geometry). */
+  function tmpLeg(id, profile, t0, t1, parkDep, parkArr) {
+    const stops = [
+      { ref: state.from, arriveJd: null, departJd: t0, ...(parkDep != null ? { parkAltKm: parkDep } : {}) },
+      { ref: state.to, arriveJd: t1, departJd: null, ...(parkArr != null ? { parkAltKm: parkArr } : {}) },
+    ];
+    const obj = { id, trajGroup: GROUP, motion: { kind: 'route', profile, stops } };
+    return legData(obj, 0, store.get().ctx);
+  }
+
+  function renderParkPlaceholders() {
+    const ctx = store.get().ctx;
+    for (const [key, ref] of [['depParkStr', state.from], ['arrParkStr', state.to]]) {
+      const g = stopGravity({ ref }, ctx);
+      const el = q(`[data-k=${key}]`);
+      el.placeholder = g.gm > 0 ? `default ${+g.parkAltKm.toFixed(1)} (${nameOf(g.bodyId, ctx)})` : 'n/a (no parking orbit)';
+    }
+  }
+
   function compute() {
     const out = q('[data-f=out]'), scan = q('[data-f=scan]');
+    const ballisticMode = state.mode === 'ballistic';
     q('[data-f=accelWrap]').hidden = state.mode !== 'accel';
     q('[data-f=durWrap]').hidden = state.mode === 'accel';
+    q('[data-f=depParkWrap]').hidden = q('[data-f=arrParkWrap]').hidden = !ballisticMode;
+    renderParkPlaceholders();
+    cancelGroup(GROUP);
     plan = null;
     foot.querySelector('[data-a=create]').disabled = true;
     const ctx = store.get().ctx;
     const t0 = parseDateToJd(state.departStr);
+    const parkDep = parkVal(state.depParkStr), parkArr = parkVal(state.arrParkStr);
     const errs = [];
     if (!Number.isFinite(t0)) errs.push('Departure is not a valid date (YYYY-MM-DD HH:MM).');
     if (!state.from || !state.to) errs.push('Choose both endpoints.');
     if (state.from && state.from === state.to) errs.push('From and To must differ.');
+    if (ballisticMode && (Number.isNaN(parkDep) || Number.isNaN(parkArr))) errs.push('Parking altitudes must be non-negative numbers of km (or blank for the default).');
     if (errs.length) { out.innerHTML = errs.map((e) => `<div class="msg err">✕ ${esc(e)}</div>`).join(''); scan.innerHTML = ''; return; }
     const P0 = positionOf(state.from, t0, ctx);
     const D0 = vdist(positionOf(state.to, t0, ctx), P0);
     let html = `<dl class="kv wide">
       ${row('Straight-line distance at departure', `${fmtDist(D0)}`)}
       ${row('One-way light time at departure', `${fmtLightTime(D0 * LIGHT_S_PER_AU)} <span class="muted">(round trip ${fmtLightTime(2 * D0 * LIGHT_S_PER_AU)})</span>`)}`;
+    let notes = '';
     let T = NaN;
     if (state.mode === 'accel') {
       const g = parseFloat(state.accelG);
@@ -98,8 +134,10 @@ export function openPlanner(app, init = {}) {
       html += row('Distance flown (to where the target will be)', fmtDist(D));
       html += row('Acceleration', `${fmtG(g)} <span class="muted">(${fmtMS2(a)})</span>`);
       html += row('Peak velocity (midpoint)', fmtKmS(a * T / 2));
-      html += row('Δv (accelerate + decelerate)', fmtKmS(a * T));
+      html += row('Δv (accelerate + decelerate, gravity-free)', fmtKmS(a * T));
       html += row('Naive time from departure distance', `<span class="muted">${fmtDuration(brachistochroneTime(D0, a))}</span>`);
+      const au = auditHtml(tmpLeg('__planner_main', 'brachistochrone', t0, t0 + T));
+      if (au) { html += au.rows; notes += au.notes; }
       plan = { profile: 'brachistochrone', accelG: g, t0, t1: t0 + T, solved: true };
     } else {
       T = parseFloat(state.durationDays);
@@ -112,50 +150,59 @@ export function openPlanner(app, init = {}) {
         const a = 4 * D / (T * T);
         html += row('Required acceleration', `<b>${fmtG(auDay2ToMS2(a) / G0_M_S2)}</b> <span class="muted">(${fmtMS2(a)})</span>`);
         html += row('Peak velocity (midpoint)', fmtKmS(2 * D / T));
-        html += row('Δv (accelerate + decelerate)', fmtKmS(4 * D / T));
+        html += row('Δv (accelerate + decelerate, gravity-free)', fmtKmS(4 * D / T));
+        const au = auditHtml(tmpLeg('__planner_main', 'brachistochrone', t0, t0 + T));
+        if (au) { html += au.rows; notes += au.notes; }
         plan = { profile: 'brachistochrone', accelG: auDay2ToMS2(a) / G0_M_S2, t0, t1: t0 + T, solved: false };
       } else {
-        const res = ballistic(state.from, state.to, t0, T, ctx);
-        if (!res) html += `</dl><div class="msg warn">⚠ No ballistic (single-revolution Lambert) solution for this geometry and duration.</div><dl class="kv wide">`;
+        // scan rows are requested first so the main plan (requested last) is computed first
+        renderScan(t0, parkDep, parkArr);
+        const leg = tmpLeg('__planner_main', 'ballistic', t0, t0 + T, parkDep, parkArr);
+        if (!leg.ballistic) html += '</dl><div class="msg warn">⚠ No ballistic (single-revolution Lambert) solution for this geometry and duration.</div><dl class="kv wide">';
         else {
-          html += row('Departure excess speed v∞', `<b>${fmtSpeedKmS(res.vinfDep)}</b>`);
-          html += row('Arrival excess speed v∞', `<b>${fmtSpeedKmS(res.vinfArr)}</b>`);
-          html += row('Total excess Δv', fmtSpeedKmS(res.vinfDep + res.vinfArr));
-          html += row('Transfer orbit', `a ${fmtAu(res.a)} · e ${res.e.toFixed(4)}${res.e >= 1 ? ' (hyperbolic)' : ''}`);
-          html += row('Perihelion distance', fmtAu(res.rp));
-          if (res.e < 1) html += row('Aphelion distance', fmtAu(res.ra));
+          const bh = ballisticHtml(leg, ctx);
+          html += bh.rows;
+          html += row('Perihelion / aphelion', `${fmtAu(leg.ballistic.rp)}${leg.ballistic.e < 1 ? ` / ${fmtAu(leg.ballistic.a * (1 + leg.ballistic.e))}` : ' <span class="muted">(hyperbolic)</span>'}`);
+          notes += bh.notes;
           plan = { profile: 'ballistic', t0, t1: t0 + T };
         }
       }
     }
-    html += '</dl>';
+    html += '</dl>' + notes;
     out.innerHTML = html;
     foot.querySelector('[data-a=create]').disabled = !plan;
-
-    if (state.mode === 'ballistic') {
-      let rows = '', best = null;
-      const results = SCAN_DAYS.map((days) => ({ days, r: ballistic(state.from, state.to, t0, days, ctx) }));
-      for (const x of results) if (x.r && (!best || x.r.vinfDep + x.r.vinfArr < best.r.vinfDep + best.r.vinfArr)) best = x;
-      for (const x of results) {
-        const tot = x.r ? x.r.vinfDep + x.r.vinfArr : NaN;
-        rows += `<tr data-days="${x.days}" class="${x === best ? 'best' : ''}"><td>${fmtDuration(x.days)}</td><td class="mono">${formatJd(t0 + x.days, { time: false })}</td>
-          <td class="num">${x.r ? fmtSpeedKmS(x.r.vinfDep) : '—'}</td><td class="num">${x.r ? fmtSpeedKmS(x.r.vinfArr) : '—'}</td><td class="num"><b>${x.r ? fmtSpeedKmS(tot) : 'no solution'}</b></td></tr>`;
-      }
-      scan.innerHTML = `<div class="section-title">Duration scan (departing ${formatJd(t0, { time: false })}) — click a row to use it</div>
-        <table class="scan-table"><thead><tr><th>Duration</th><th>Arrival</th><th class="num">Dep. v∞</th><th class="num">Arr. v∞</th><th class="num">Total</th></tr></thead><tbody>${rows}</tbody></table>`;
-    } else scan.innerHTML = '';
+    if (!ballisticMode) scan.innerHTML = '';
   }
 
-  function ballistic(from, to, t0, T, ctx) {
-    const P0 = positionOf(from, t0, ctx), P1 = positionOf(to, t0 + T, ctx);
-    const sol = lambert(P0, P1, T, GM_SUN, true);
-    if (!sol.ok) return null;
-    const v0 = velocityOf(from, t0, ctx), v1 = velocityOf(to, t0 + T, ctx);
-    const el = stateToElements(P0, sol.v1, GM_SUN, t0);
-    return {
-      vinfDep: auDayToKmS(vlen(vsub(sol.v1, v0))), vinfArr: auDayToKmS(vlen(vsub(sol.v2, v1))),
-      a: el.a, e: el.e, rp: el.rp, ra: el.ra,
-    };
+  function renderScan(t0, parkDep, parkArr) {
+    const scan = q('[data-f=scan]');
+    const ctx = store.get().ctx;
+    const results = SCAN_DAYS.map((days) => {
+      const leg = tmpLeg(`__planner_scan_${days}`, 'ballistic', t0, t0 + days, parkDep, parkArr);
+      return { days, s: leg.ballistic ? ballisticSummary(leg, ctx) : null };
+    });
+    let best = null, done = 0;
+    for (const x of results) {
+      if (!x.s) continue;
+      if (x.s.status !== 'pending') done++;
+      if (!best || x.s.totalDv < best.s.totalDv) best = x;
+    }
+    const kms = (v) => fmtSpeedKmS(auDayToKmS(v));
+    let rows = '';
+    for (const x of results) {
+      const s = x.s;
+      const star = s && s.status !== 'nbody' ? '<span class="muted">*</span>' : '';
+      const ca = s?.closest?.[0];
+      rows += `<tr data-days="${x.days}" class="${x === best ? 'best' : ''}"><td>${fmtDuration(x.days)}</td><td class="mono">${formatJd(t0 + x.days, { time: false })}</td>
+        <td class="num">${s ? kms(s.vinfDep) + star : '—'}</td><td class="num">${s ? kms(s.vinfArr) + star : '—'}</td>
+        <td class="num">${s ? kms(s.dep.dv) : '—'}</td><td class="num">${s ? kms(s.arr.dv) : '—'}</td>
+        <td class="num"><b>${s ? kms(s.totalDv) : 'no solution'}</b>${s?.impacts?.length ? ' <span class="badge badge-impact">IMPACT</span>' : ''}</td>
+        <td>${ca ? `${esc(nameOf(ca.id, ctx))} ${fmtMkm(ca.distAu * AU_KM)}${ca.close ? ' <b class="warn-text">close</b>' : ''}` : s?.status === 'failed' ? '<span class="warn-text">N-body failed</span>' : '<span class="muted">…</span>'}</td></tr>`;
+    }
+    const total = results.filter((x) => x.s).length;
+    scan.innerHTML = `<div class="section-title">Duration scan (departing ${formatJd(t0, { time: false })}) — click a row to use it</div>
+      <table class="scan-table"><thead><tr><th>Duration</th><th>Arrival</th><th class="num">Dep. v∞</th><th class="num">Arr. v∞</th><th class="num">Dep. burn</th><th class="num">Capture</th><th class="num">Total Δv</th><th>Closest approach</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="muted small">${done < total ? `N-body refinement ${done}/${total} done; * = two-body value until refined. ` : ''}Burns from / into circular parking orbits (altitudes above).</div>`;
   }
 
   q('[data-f=scan]').addEventListener('click', (ev) => {
@@ -171,14 +218,15 @@ export function openPlanner(app, init = {}) {
     if (!plan) return;
     const jdStr = (jd) => formatJd(jd).replace(' UTC', '');
     const fromName = nameOf(state.from, store.get().ctx), toName = nameOf(state.to, store.get().ctx);
+    const ballistic = plan.profile === 'ballistic';
     const prefill = {
       name: `${fromName}–${toName} ship`, type: 'ship', kind: 'route',
       route: {
         profile: plan.profile,
         accelG: plan.profile === 'brachistochrone' ? String(+plan.accelG.toPrecision(4)) : '',
         stops: [
-          { ref: state.from, x: '', y: '', z: '', arriveStr: '', departStr: jdStr(plan.t0) },
-          { ref: state.to, x: '', y: '', z: '', arriveStr: plan.solved ? '' : jdStr(plan.t1), departStr: '' },
+          { ref: state.from, x: '', y: '', z: '', arriveStr: '', departStr: jdStr(plan.t0), parkAltStr: ballistic ? state.depParkStr.trim() : '', flyby: false },
+          { ref: state.to, x: '', y: '', z: '', arriveStr: plan.solved ? '' : jdStr(plan.t1), departStr: '', parkAltStr: ballistic ? state.arrParkStr.trim() : '', flyby: false },
         ],
       },
     };
@@ -186,5 +234,7 @@ export function openPlanner(app, init = {}) {
     app.openEditor(null, prefill);
   });
 
+  // background N-body results: refresh the ballistic numbers and the scan; audits for the brachistochrone modes
+  unsub = onTrajectoryUpdate(() => compute());
   compute();
 }

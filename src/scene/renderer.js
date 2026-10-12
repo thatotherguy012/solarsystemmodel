@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
 import { AU_KM } from '../astro/constants.js';
-import { store } from '../sim/store.js';
+import { store, hiddenSetOf } from '../sim/store.js';
 import { tick } from '../sim/clock.js';
 import { getBody, hasBody } from '../sim/ephemeris.js';
 import { positionOf, routePhase, existsAt } from '../sim/custom.js';
@@ -287,6 +287,7 @@ export function createRenderer(container, opts) {
     const fc = {
       jd, F, ctx, camera, camPos: camera.position, pxPerRad, width, height, toggles: s.toggles, markerPx: s.markerPx,
       selection: s.selection, focus: displayedFocus, measure: s.measure, items: [], screen: new Map(), project,
+      hidden: hiddenSetOf(s),
     };
     starfield.update(fc);
     grid.update(fc);
@@ -327,6 +328,8 @@ export function createRenderer(container, opts) {
     onFrame(fn) { infoListeners.add(fn); return () => infoListeners.delete(fn); },
     /** Re-sync custom-object visuals (e.g. after a bulk import). */
     syncCustom() { const s = store.get(); custom.sync(s.objects, s.ctx); },
+    /** Redraw route paths whose N-body trajectories have arrived since they were built. */
+    refreshPaths() { custom.refreshPaths(store.get().ctx); },
     isVisibleAt(id) { const it = lastItems.find((i) => i.id === id); return !!it?.visible; },
     get camera() { return camera; },
     get items() { return lastItems; },

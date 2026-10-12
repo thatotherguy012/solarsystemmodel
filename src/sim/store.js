@@ -23,6 +23,10 @@ export const DEFAULT_TOGGLES = { orbits: true, labels: true, grid: true, moons: 
  * @property {string} scenarioName
  * @property {string} search        object-browser filter text
  * @property {number|null} cameraDistance last known camera distance (AU), persisted in the scenario view
+ * @property {string[]} hiddenIds   bodies / custom objects hidden individually (eye toggles in the object list)
+ * @property {boolean} sidebarCollapsed   object browser collapsed to a strip
+ * @property {boolean} inspectorCollapsed inspector collapsed to a strip
+ * @property {number|null} timelineSpan   visible span of the timeline strip (days); null = fit the events
  */
 
 function createStore(initial) {
@@ -72,7 +76,34 @@ export const store = createStore({
   scenarioName: 'Untitled scenario',
   search: '',
   cameraDistance: null,
+  hiddenIds: [],
+  sidebarCollapsed: false,
+  inspectorCollapsed: false,
+  timelineSpan: null,
 });
+
+// ------------------------------------------------------------------ per-object visibility
+
+let hiddenArr = null;
+let hiddenSet = new Set();
+
+/** The individually hidden ids as a Set (memoized on the store array). */
+export function hiddenSetOf(state = store.get()) {
+  if (state.hiddenIds !== hiddenArr) { hiddenArr = state.hiddenIds; hiddenSet = new Set(hiddenArr); }
+  return hiddenSet;
+}
+
+/** Hide (hidden = true) or show the given ids. */
+export function setHidden(ids, hidden) {
+  const set = new Set(store.get().hiddenIds);
+  for (const id of ids) { if (hidden) set.add(id); else set.delete(id); }
+  store.set({ hiddenIds: [...set] });
+}
+
+/** Toggle one id's individual visibility. */
+export function toggleHidden(id) {
+  setHidden([id], !hiddenSetOf().has(id));
+}
 
 // ------------------------------------------------------------------ actions
 
@@ -109,6 +140,7 @@ export function deleteObject(id) {
   if (s.selection === id) patch.selection = null;
   if (s.focus === id) patch.focus = 'sun';
   if (s.measure && (s.measure.a === id || s.measure.b === id)) patch.measure = null;
+  if (s.hiddenIds.includes(id)) patch.hiddenIds = s.hiddenIds.filter((x) => x !== id);
   store.set(patch);
 }
 

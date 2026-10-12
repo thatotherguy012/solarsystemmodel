@@ -26,18 +26,23 @@
         </nav>
       </header>
 
-      <aside id="sidebar" aria-label="Object browser">
+      <aside id="sidebar" class="side-panel" aria-label="Object browser">
         <div class="panel-head">
           <span>Objects</span>
-          <button id="collapse-left" class="icon-btn" title="Hide object list" aria-label="Hide object list">«</button>
+          <button id="collapse-left" class="icon-btn panel-chevron" title="Collapse the object list (O)" aria-label="Collapse the object list" aria-expanded="true" aria-controls="object-list">
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M10 3 5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
         </div>
         <div id="object-list" class="object-list"></div>
+        <button id="expand-left" class="panel-strip" title="Show the object list (O)" aria-label="Show the object list" hidden>
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M6 3l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="strip-label">Objects</span>
+        </button>
       </aside>
 
       <main id="viewport">
         <div id="canvas-host" class="canvas-host"></div>
         <div class="overlay-top">
-          <button id="expand-left" class="btn small" hidden title="Show object list">» Objects</button>
           <div id="toggle-chips" class="chips" role="group" aria-label="Visibility"></div>
           <label class="marker-size" title="Minimum on-screen body radius (0 = true scale)">
             <span>Marker size</span>
@@ -62,7 +67,19 @@
         <div id="measure-banner" class="overlay-banner" hidden></div>
       </main>
 
-      <aside id="inspector" aria-label="Inspector"></aside>
+      <aside id="inspector" class="side-panel" aria-label="Inspector">
+        <div class="panel-head">
+          <button id="collapse-right" class="icon-btn panel-chevron" title="Collapse the inspector (I)" aria-label="Collapse the inspector" aria-expanded="true" aria-controls="inspector-body">
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M6 3l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <span>Inspector</span>
+        </div>
+        <div id="inspector-body" class="panel-scroll"></div>
+        <button id="expand-right" class="panel-strip" title="Show the inspector (I)" aria-label="Show the inspector" hidden>
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M10 3 5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="strip-label">Inspector</span>
+        </button>
+      </aside>
 
       <footer id="bottombar">
         <div id="timebar" class="timebar"></div>

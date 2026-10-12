@@ -9,7 +9,9 @@ import { glowTexture, makeDynamicLine, setLinePoints, mixColor } from './util.js
 import { esc } from '../ui/format.js';
 
 const ORBIT_SEGMENTS = 720;
-const SMALL_TYPES = new Set(['asteroid', 'trojan', 'neo', 'centaur', 'comet']);
+const R_EARTH_KM = 6371;
+/** Marker scaling: minPx(body) = markerPx * clamp((R / R_earth)^MARKER_EXP, MARKER_MIN, MARKER_MAX). */
+const MARKER_EXP = 0.3, MARKER_MIN = 0.45, MARKER_MAX = 3.0;
 const BASE_PRIORITY = { star: 600, planet: 500, dwarf: 300, moon: 200, asteroid: 120, trojan: 110, neo: 115, centaur: 110, comet: 125 };
 const ORBIT_OPACITY = { planet: 0.6, dwarf: 0.32, moon: 0.45, asteroid: 0.13, trojan: 0.13, neo: 0.18, centaur: 0.2, comet: 0.24 };
 
@@ -19,6 +21,19 @@ export function categoryVisible(type, toggles) {
   if (type === 'comet') return toggles.comets;
   if (type === 'asteroid' || type === 'trojan' || type === 'neo' || type === 'centaur') return toggles.asteroids;
   return true;
+}
+
+/**
+ * Relative marker size of a body: the minimum on-screen radius is markerPx times this factor, so markers keep
+ * the bodies' size order at every zoom (Sun > Jupiter ≈ 2 × Earth > Mars > Mercury > small dots).
+ */
+export function markerScale(radiusKm) {
+  return Math.min(MARKER_MAX, Math.max(MARKER_MIN, Math.pow(Math.max(radiusKm, 1e-3) / R_EARTH_KM, MARKER_EXP)));
+}
+
+/** True if a natural body is hidden by the user: itself, or (for a moon) its parent. */
+export function bodyUserHidden(b, hidden) {
+  return hidden.has(b.id) || (b.type === 'moon' && !!b.parent && hidden.has(b.parent));
 }
 
 /** Semi-major axis (AU) of a body's orbit about its parent, if it has Kepler elements. */
@@ -78,7 +93,7 @@ export function createBodies(scene, opts = {}) {
     const e = {
       id: b.id, body: b, mesh, label, labelEl: el, radiusAu: b.radiusKm / AU_KM, marginPx: -1,
       priority: (BASE_PRIORITY[b.type] ?? 100) + Math.min(60, Math.log10(Math.max(1, b.radiusKm)) * 12),
-      labelW: 10 + b.name.length * 6.6, small: SMALL_TYPES.has(b.type), orbitA: orbitSemiMajor(b),
+      labelW: 10 + b.name.length * 6.6, markerScale: markerScale(b.radiusKm), orbitA: orbitSemiMajor(b),
       orbitLine: null, orbit: null, glow: null,
     };
 
@@ -127,7 +142,7 @@ export function createBodies(scene, opts = {}) {
    * @param {Object} fc frame context (see renderer.js)
    */
   function update(fc) {
-    const { jd, F, camPos, pxPerRad, toggles, markerPx, selection, focus } = fc;
+    const { jd, F, camPos, pxPerRad, toggles, markerPx, selection, focus, hidden } = fc;
     let rebuilds = 0;
     // Heliocentric orbit lines other than the focus/selection fade when zoomed in close to a body, where
     // they would otherwise criss-cross the view in projection.
@@ -141,7 +156,10 @@ export function createBodies(scene, opts = {}) {
     for (const e of entries) {
       const b = e.body;
       const pinned = e.id === focus || e.id === selection;
-      let visible = categoryVisible(b.type, toggles) || pinned;
+      // Individually hidden bodies (and moons of hidden planets) stay hidden even when selected or focused;
+      // a disabled category is overridden for the selection/focus so a body picked from the list is visible.
+      const userHidden = bodyUserHidden(b, hidden);
+      let visible = !userHidden && (categoryVisible(b.type, toggles) || pinned);
       if (visible && b.type === 'moon' && !pinned && e.orbitA) {
         const p = byId.get(b.parent);
         const aPx = (e.orbitA / Math.max(p.camDist, 1e-12)) * pxPerRad;
@@ -152,7 +170,7 @@ export function createBodies(scene, opts = {}) {
       const [rx, ry, rz] = e.rel;
       const pxTrue = (e.radiusAu / Math.max(e.camDist, 1e-12)) * pxPerRad;
       let k = 1;
-      const minPx = e.small ? markerPx * 0.75 : markerPx;
+      const minPx = markerPx * e.markerScale;
       if (minPx > 0 && pxTrue < minPx) k = minPx / pxTrue;
       e.pxRadius = pxTrue * k;
       if (visible) {
@@ -160,9 +178,10 @@ export function createBodies(scene, opts = {}) {
         e.mesh.scale.setScalar(e.radiusAu * k);
       }
       if (e.glow) {
-        e.glow.visible = true;
+        // glow diameter follows the Sun's marker (or its true disc when larger), never below 24 px
+        e.glow.visible = visible;
         e.glow.position.set(rx, ry, rz);
-        const px = Math.max(36, e.pxRadius * 5);
+        const px = Math.max(24, e.pxRadius * 4.5);
         e.glow.scale.setScalar(px / pxPerRad);
       }
 
@@ -203,7 +222,7 @@ export function createBodies(scene, opts = {}) {
       e.label.position.set(rx, ry, rz);
       const scr = fc.project(rx, ry, rz);
       const item = {
-        id: e.id, kind: 'body', x: scr.x, y: scr.y, behind: scr.behind, r: e.pxRadius, visible,
+        id: e.id, kind: 'body', x: scr.x, y: scr.y, behind: scr.behind, r: e.pxRadius, visible, userHidden,
         priority: e.priority + (e.id === selection ? 1000 : 0) + (e.id === focus ? 800 : 0),
         label: e.label, labelEl: e.labelEl, labelW: e.labelW, wantLabel: visible && toggles.labels && !scr.behind,
         rel: e.rel, camDist: e.camDist,

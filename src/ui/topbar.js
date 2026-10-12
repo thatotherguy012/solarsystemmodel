@@ -109,17 +109,6 @@ export function initTopbar(app) {
   $('btn-export').addEventListener('click', () => app.exportScenario());
   $('btn-help').addEventListener('click', () => app.openHelp());
 
-  // ---- sidebar collapse
-  const appEl = $('app');
-  const setCollapsed = (c) => {
-    appEl.classList.toggle('left-collapsed', c);
-    $('expand-left').hidden = !c;
-    try { localStorage.setItem('ssm.ui.leftCollapsed', c ? '1' : '0'); } catch { /* ignore */ }
-  };
-  $('collapse-left').addEventListener('click', () => setCollapsed(true));
-  $('expand-left').addEventListener('click', () => setCollapsed(false));
-  try { if (localStorage.getItem('ssm.ui.leftCollapsed') === '1') setCollapsed(true); } catch { /* ignore */ }
-
   store.subscribe((s, changed) => {
     if (changed.includes('scenarioName')) renderName();
     if (changed.includes('toggles')) renderChips();

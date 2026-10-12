@@ -6,9 +6,12 @@ import { vdist } from '../../astro/vec3.js';
 import { store, newId, upsertObject, deleteObject, selectAndFocus } from '../../sim/store.js';
 import { getBody, equatorialPlane, getPosition } from '../../sim/ephemeris.js';
 import { OBJECT_TYPES, TYPE_GLYPHS, resolveRoute, positionOf, muOf, nameOf, idExists } from '../../sim/custom.js';
+import { onTrajectoryUpdate } from '../../sim/trajectory.js';
+import { ballisticSummary, auditSummary, stopGravity } from '../../sim/legPhysics.js';
 import { openModal, confirmModal, h } from '../modal.js';
 import { refPicker, FIXED_REF } from '../components.js';
-import { fmtKm, fmtDist, fmtKmS, fmtG, fmtDuration, fmtSpeedKmS, fmtAu, esc } from '../format.js';
+import { fmtKm, fmtDist, fmtKmS, fmtG, fmtDuration, fmtSpeedKmS, fmtAu, fmtMkm, esc } from '../format.js';
+import { ballisticHtml, auditHtml, flybysHtml, routeDeltaVHtml, fmtPct } from '../legInfo.js';
 import { auDayToKmS } from '../../astro/constants.js';
 
 const PALETTE = ['#ff8a3d', '#e8d44d', '#4fd18b', '#5aa9ff', '#7fe3ff', '#b48cff', '#ff6b6b', '#ff7fd1', '#d6a35c', '#cfd6e0'];
@@ -49,8 +52,8 @@ function toDraft(o, s) {
     lagrange: { primary: 'sun', secondary: 'earth', point: 'L2' },
     fixed: { x: '', y: '', z: '', unit: 'AU' },
     route: { profile: 'brachistochrone', accelG: '0.3', stops: [
-      { ref: 'earth', x: '', y: '', z: '', arriveStr: '', departStr: jdStr(s.jd) },
-      { ref: 'mars', x: '', y: '', z: '', arriveStr: '', departStr: '' },
+      { ref: 'earth', x: '', y: '', z: '', arriveStr: '', departStr: jdStr(s.jd), parkAltStr: '', flyby: false },
+      { ref: 'mars', x: '', y: '', z: '', arriveStr: '', departStr: '', parkAltStr: '', flyby: false },
     ] },
   };
   const R = getBody(sel)?.radiusKm ?? 6371;
@@ -67,10 +70,14 @@ function toDraft(o, s) {
   else if (m?.kind === 'route') {
     d.route = {
       profile: m.profile, accelG: m.accelG != null ? String(m.accelG) : '',
-      stops: m.stops.map((st) => ({
-        ref: st.ref ?? FIXED_REF, x: st.ref ? '' : String(st.x), y: st.ref ? '' : String(st.y), z: st.ref ? '' : String(st.z),
-        arriveStr: st.solved && m.profile === 'brachistochrone' && m.accelG ? '' : jdStr(st.arriveJd), departStr: jdStr(st.departJd),
-      })),
+      stops: m.stops.map((st, i) => {
+        const flyby = !!st.flyby || (i > 0 && i < m.stops.length - 1 && st.arriveJd != null && st.arriveJd === st.departJd);
+        return {
+          ref: st.ref ?? FIXED_REF, x: st.ref ? '' : String(st.x), y: st.ref ? '' : String(st.y), z: st.ref ? '' : String(st.z),
+          arriveStr: st.solved && m.profile === 'brachistochrone' && m.accelG ? '' : jdStr(st.arriveJd), departStr: flyby ? '' : jdStr(st.departJd),
+          parkAltStr: st.parkAltKm != null ? String(st.parkAltKm) : '', flyby,
+        };
+      }),
     };
   }
   return d;
@@ -110,7 +117,10 @@ export function openObjectEditor(app, id = null, prefill = null) {
     <button class="btn" data-a="cancel">Cancel</button>
     <button class="btn primary" data-a="save">${existing ? 'Save' : 'Create'}</button>
   </div>`);
-  const modal = openModal({ title: existing ? `Edit — ${existing.name}` : 'New object', body, footer: foot, wide: true });
+  // N-body legs / audits finishing in the background refresh the summary while the editor is open
+  let unsubTraj = () => {};
+  const modal = openModal({ title: existing ? `Edit — ${existing.name}` : 'New object', body, footer: foot, wide: true, onClose: () => unsubTraj() });
+  unsubTraj = onTrajectoryUpdate(() => { if (d.kind === 'route') runValidate(); });
 
   // ---- general fields
   const q = (sel) => body.querySelector(sel);
@@ -301,35 +311,47 @@ export function openObjectEditor(app, id = null, prefill = null) {
       <div class="form-grid">
         <label>Profile<select data-m="profile">
           <option value="brachistochrone">Brachistochrone (constant thrust, flip at midpoint)</option>
-          <option value="ballistic">Ballistic (Lambert coast about the Sun)</option>
+          <option value="ballistic">Ballistic (coast through the Sun's and planets' gravity)</option>
           <option value="linear">Linear (constant speed, straight line)</option>
         </select></label>
         <label data-f="accelWrap">Acceleration (g) <span class="muted">— blank arrivals are solved from this</span><input data-m="accelG" class="mono" value="${esc(r.accelG)}" inputmode="decimal" placeholder="e.g. 0.3"></label>
       </div>
       <table class="stops"><thead><tr><th>#</th><th>Stop</th><th>Arrive (UTC)</th><th>Depart (UTC)</th><th></th></tr></thead><tbody data-f="stops"></tbody></table>
       <div class="inline"><button type="button" class="btn small" data-f="addstop">＋ Add stop</button>
-      <span class="muted small">Dates: <code>YYYY-MM-DD HH:MM</code> or <code>+N</code> days after the previous time (<code>+12h</code>, <code>+1y</code>). Brachistochrone: leave an arrival blank to solve it.</span></div>
+      <span class="muted small">Dates: <code>YYYY-MM-DD HH:MM</code> or <code>+N</code> days after the previous time (<code>+12h</code>, <code>+1y</code>). Brachistochrone: leave an arrival blank to solve it. Ballistic: tick <i>flyby</i> on an intermediate planet for a gravity assist; parking altitudes set the departure/capture burns.</span></div>
     </div>`);
     kindHost.appendChild(wrap);
     const prof = wrap.querySelector('[data-m=profile]');
     prof.value = r.profile;
     const accelWrap = wrap.querySelector('[data-f=accelWrap]');
     accelWrap.hidden = r.profile !== 'brachistochrone';
-    prof.addEventListener('change', () => { r.profile = prof.value; accelWrap.hidden = r.profile !== 'brachistochrone'; validate(); });
+    prof.addEventListener('change', () => { r.profile = prof.value; accelWrap.hidden = r.profile !== 'brachistochrone'; renderStops(); validate(); });
     wrap.querySelector('[data-m=accelG]').addEventListener('input', (ev) => { r.accelG = ev.target.value; validate(); });
     const tbody = wrap.querySelector('[data-f=stops]');
+    /** Placeholder for a stop's parking-altitude field: the default for its body, or n/a. */
+    const parkPlaceholder = (ref) => {
+      if (!ref || ref === FIXED_REF) return 'n/a';
+      const g = stopGravity({ ref }, store.get().ctx);
+      return g.gm > 0 ? `${+g.parkAltKm.toFixed(1)}` : 'n/a';
+    };
     const renderStops = () => {
       tbody.innerHTML = '';
+      const ballistic = r.profile === 'ballistic';
       r.stops.forEach((st, i) => {
         const first = i === 0, last = i === r.stops.length - 1;
+        const mid = !first && !last;
+        if (!mid) st.flyby = false;
+        const fly = mid && st.flyby;
         const tr = h(`<tr>
           <td class="muted">${i + 1}</td>
           <td><div data-f="ref"></div>
             <div class="xyz" ${st.ref === FIXED_REF ? '' : 'hidden'}>
               <input data-s="x" placeholder="x AU" value="${esc(st.x)}" class="mono"><input data-s="y" placeholder="y AU" value="${esc(st.y)}" class="mono"><input data-s="z" placeholder="z AU" value="${esc(st.z)}" class="mono">
-            </div></td>
+            </div>
+            ${ballistic && !fly ? `<div class="stop-opts"><label title="Circular parking-orbit altitude used for the departure / capture burn at this stop (blank = default for the body)">Parking alt. <input data-s="parkAltStr" class="mono" value="${esc(st.parkAltStr ?? '')}" placeholder="${esc(parkPlaceholder(st.ref))}" inputmode="decimal"> km</label></div>` : ''}</td>
           <td>${first ? '<span class="muted">start</span>' : `<input data-s="arriveStr" class="mono" value="${esc(st.arriveStr)}" placeholder="${r.profile === 'brachistochrone' ? 'blank = solve' : 'YYYY-MM-DD HH:MM'}">`}<div class="solved muted small" data-f="solved"></div></td>
-          <td>${last ? '<span class="muted">end</span>' : `<input data-s="departStr" class="mono" value="${esc(st.departStr)}" placeholder="${first ? 'YYYY-MM-DD HH:MM' : '+N days'}">`}</td>
+          <td>${last ? '<span class="muted">end</span>' : fly ? '<span class="flyby-note">departs on arrival (flyby)</span>' : `<input data-s="departStr" class="mono" value="${esc(st.departStr)}" placeholder="${first ? 'YYYY-MM-DD HH:MM' : '+N days'}">`}
+            ${mid ? `<div class="stop-opts"><label title="Pass the body without stopping (arrival = departure). On ballistic routes this gets a patched-conic gravity-assist analysis."><input type="checkbox" data-s="flyby" ${fly ? 'checked' : ''}> flyby (no stop)</label></div>` : ''}</td>
           <td class="row-btns">
             <button type="button" class="icon-btn small" data-mv="-1" title="Move up" ${first ? 'disabled' : ''}>↑</button>
             <button type="button" class="icon-btn small" data-mv="1" title="Move down" ${last ? 'disabled' : ''}>↓</button>
@@ -338,10 +360,15 @@ export function openObjectEditor(app, id = null, prefill = null) {
         const rp = refPicker({ value: st.ref, excludeId: d.id, allowFixed: true, ariaLabel: `Stop ${i + 1}`, onChange: (v) => {
           st.ref = v;
           tr.querySelector('.xyz').hidden = v !== FIXED_REF;
+          const park = tr.querySelector('[data-s=parkAltStr]');
+          if (park) park.placeholder = parkPlaceholder(v);
           validate();
         } });
         tr.querySelector('[data-f=ref]').appendChild(rp.el);
-        for (const inp of tr.querySelectorAll('[data-s]')) inp.addEventListener('input', () => { st[inp.dataset.s] = inp.value; validate(); });
+        for (const inp of tr.querySelectorAll('[data-s]')) {
+          if (inp.type === 'checkbox') inp.addEventListener('change', () => { st[inp.dataset.s] = inp.checked; renderStops(); validate(); });
+          else inp.addEventListener('input', () => { st[inp.dataset.s] = inp.value; validate(); });
+        }
         tr.querySelector('[data-mv="-1"]').addEventListener('click', () => { [r.stops[i - 1], r.stops[i]] = [r.stops[i], r.stops[i - 1]]; renderStops(); validate(); });
         tr.querySelector('[data-mv="1"]').addEventListener('click', () => { [r.stops[i + 1], r.stops[i]] = [r.stops[i], r.stops[i + 1]]; renderStops(); validate(); });
         tr.querySelector('[data-rm]').addEventListener('click', () => { r.stops.splice(i, 1); renderStops(); validate(); });
@@ -352,7 +379,7 @@ export function openObjectEditor(app, id = null, prefill = null) {
     wrap.querySelector('[data-f=addstop]').addEventListener('click', () => {
       const lastStop = r.stops[r.stops.length - 1];
       if (lastStop && !lastStop.departStr) lastStop.departStr = '+7';
-      r.stops.push({ ref: 'earth', x: '', y: '', z: '', arriveStr: '', departStr: '' });
+      r.stops.push({ ref: 'earth', x: '', y: '', z: '', arriveStr: '', departStr: '', parkAltStr: '', flyby: false });
       renderStops();
       validate();
     });
@@ -418,7 +445,11 @@ export function openObjectEditor(app, id = null, prefill = null) {
       if (r.profile === 'brachistochrone' && r.accelG.trim() !== '' && !(accelG > 0)) errors.push('Acceleration must be a positive number of g.');
       const draft = {
         profile: r.profile, accelG: r.profile === 'brachistochrone' && accelG > 0 ? accelG : null,
-        stops: r.stops.map((st) => ({ ref: st.ref === FIXED_REF ? null : st.ref, x: st.x, y: st.y, z: st.z, arriveStr: st.arriveStr, departStr: st.departStr })),
+        stops: r.stops.map((st, i) => ({
+          ref: st.ref === FIXED_REF ? null : st.ref, x: st.x, y: st.y, z: st.z, arriveStr: st.arriveStr, departStr: st.departStr,
+          parkAltStr: r.profile === 'ballistic' && !(st.flyby && i > 0 && i < r.stops.length - 1) ? (st.parkAltStr ?? '') : '',
+          flyby: !!st.flyby,
+        })),
       };
       for (const st of draft.stops) if (st.ref === d.id) errors.push('A route cannot stop at the object itself.');
       const res = resolveRoute(draft, ctx, parseDateToJd);
@@ -432,7 +463,7 @@ export function openObjectEditor(app, id = null, prefill = null) {
       // show solved times in the table
       const solvedEls = kindHost.querySelectorAll('[data-f=solved]');
       res.stops.forEach((st, i) => { if (solvedEls[i]) solvedEls[i].textContent = st.solved ? `solved: ${formatJd(st.arriveJd)}` : ''; });
-      if (res.legs.length) info.push(legTable(res.legs, ctx));
+      if (res.legs.length) info.push(legTable(res.legs, ctx, motion));
     }
     // general
     const from = d.fromStr.trim() ? parseDateToJd(d.fromStr) : null;
@@ -454,23 +485,49 @@ export function openObjectEditor(app, id = null, prefill = null) {
     return m > 0 && M > 0 ? dist * Math.cbrt(m / (3 * M)) : null;
   }
 
-  function legTable(legs, ctx) {
+  /** Leg summary: a compact table plus per-leg physics notes (N-body status, approaches, audits, flybys). */
+  function legTable(legs, ctx, motion) {
     let t = '<table class="legs-table"><thead><tr><th>Leg</th><th>Distance</th><th>Duration</th>';
     const prof = d.route.profile;
-    if (prof === 'brachistochrone') t += '<th>Accel</th><th>Peak v</th><th>Δv</th>';
-    else if (prof === 'ballistic') t += '<th>Dep. v∞</th><th>Arr. v∞</th><th>Transfer a / e</th>';
+    const kms = (v) => fmtSpeedKmS(auDayToKmS(v));
+    if (prof === 'brachistochrone') t += '<th>Accel</th><th>Peak v</th><th>Δv</th><th>Gravity audit</th>';
+    else if (prof === 'ballistic') t += '<th>Dep. v∞</th><th>Arr. v∞</th><th>Dep. burn</th><th>Arr. burn</th><th>Total Δv</th>';
     else t += '<th>Speed</th>';
     t += '</tr></thead><tbody>';
+    let notes = '';
     legs.forEach((L, i) => {
-      t += `<tr><td>${i + 1}. ${esc(nameOf(L.fromId, ctx))} → ${esc(nameOf(L.toId, ctx))}</td><td>${fmtDist(L.D)}</td><td>${fmtDuration(L.T)}</td>`;
-      if (prof === 'brachistochrone') t += `<td>${fmtG(auDay2ToMS2(L.accel) / G0_M_S2)}</td><td>${fmtKmS(L.vPeak)}</td><td>${fmtKmS(L.dv)}</td>`;
-      else if (prof === 'ballistic') t += L.ballistic
-        ? `<td>${fmtSpeedKmS(auDayToKmS(L.ballistic.vinfDep))}</td><td>${fmtSpeedKmS(auDayToKmS(L.ballistic.vinfArr))}</td><td>${fmtAu(L.ballistic.a)} / ${L.ballistic.e.toFixed(3)}</td>`
-        : '<td colspan="3" class="warn">no ballistic solution (linear)</td>';
-      else t += `<td>${fmtKmS(L.vAvg)}</td>`;
+      const label = `${i + 1}. ${esc(nameOf(L.fromId, ctx))} → ${esc(nameOf(L.toId, ctx))}`;
+      t += `<tr><td>${label}</td><td>${fmtDist(L.D)}</td><td>${fmtDuration(L.T)}</td>`;
+      if (prof === 'brachistochrone') {
+        const a = auditSummary(L);
+        const cell = !a ? '<td>—</td>'
+          : a.status === 'pending' ? '<td class="muted">computing…</td>'
+          : a.status === 'ok' ? `<td class="ok">OK · peak ${fmtG(a.peakG)} · loss ${fmtPct(a.lossPct)}</td>`
+          : a.status === 'marginal' ? `<td class="warn">Marginal · +${((a.maxRatio - 1) * 100).toFixed(0)} % thrust</td>`
+          : a.status === 'fail' ? `<td class="err">Cannot hold the line (×${a.maxRatio.toFixed(1)})</td>` : '<td>—</td>';
+        t += `<td>${fmtG(auDay2ToMS2(L.accel) / G0_M_S2)}</td><td>${fmtKmS(L.vPeak)}</td><td>${fmtKmS(L.dv)}</td>${cell}`;
+        const ah = auditHtml(L);
+        if (ah && a?.status !== 'ok' && a?.status !== 'pending') notes += `<div class="leg-label">Leg ${i + 1}</div>${ah.notes}`;
+      } else if (prof === 'ballistic') {
+        const sm = ballisticSummary(L, ctx);
+        if (sm) {
+          const tb = sm.status === 'nbody' ? '' : '<span class="muted">*</span>';
+          const burn = (b) => (b.kind === 'flyby' ? '<span class="muted">flyby</span>' : kms(b.dv));
+          t += `<td>${kms(sm.vinfDep)}${tb}</td><td>${kms(sm.vinfArr)}${tb}</td><td>${burn(sm.dep)}</td><td>${burn(sm.arr)}</td><td><b>${kms(sm.totalDv)}</b></td>`;
+          const bh = ballisticHtml(L, ctx);
+          const approaches = sm.closest.map((c) => `${esc(nameOf(c.id, ctx))} ${fmtMkm(c.distAu * 149597870.7)} (${formatJd(c.jd, { time: false })})${c.close ? ' <b class="warn-text">close</b>' : ''}`).join(' · ');
+          notes += `<div class="leg-label">Leg ${i + 1}</div>${approaches ? `<div class="small">Closest approaches: ${approaches}</div>` : ''}${bh.notes}`;
+        } else t += '<td colspan="5" class="warn">no ballistic solution (linear)</td>';
+      } else t += `<td>${fmtKmS(L.vAvg)}</td>`;
       t += '</tr>';
     });
-    return t + '</tbody></table>';
+    t += '</tbody></table>';
+    if (prof === 'ballistic') t += '<div class="muted small">* two-body value while the N-body refinement runs. Burns: departure from / capture into a circular parking orbit (altitude per stop).</div>';
+    if (prof === 'ballistic' && motion) {
+      const tmp = { id: '__editor_draft', motion };
+      notes += flybysHtml(tmp, ctx) + routeDeltaVHtml(tmp, ctx);
+    }
+    return t + (notes ? `<div class="leg-notes">${notes}</div>` : '');
   }
 
   let lastResult = null;
@@ -487,7 +544,7 @@ export function openObjectEditor(app, id = null, prefill = null) {
     sum.innerHTML = `
       ${errors.map((e) => `<div class="msg err">✕ ${esc(e)}</div>`).join('')}
       ${warnings.map((w) => `<div class="msg warn">⚠ ${esc(w)}</div>`).join('')}
-      ${info.map((x) => (x.startsWith('<table') ? x : `<div class="msg info">${esc(x)}</div>`)).join('')}`;
+      ${info.map((x) => (x.startsWith('<') ? x : `<div class="msg info">${esc(x)}</div>`)).join('')}`;
     foot.querySelector('[data-a=save]').disabled = errors.length > 0;
   }
 

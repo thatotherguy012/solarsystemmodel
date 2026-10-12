@@ -17,6 +17,8 @@ export function serializeScenario(state = store.get()) {
     view: {
       jd: state.jd, focus: state.focus, selection: state.selection, toggles: state.toggles,
       markerPx: state.markerPx, cameraDistance: state.cameraDistance ?? null,
+      hiddenIds: state.hiddenIds, sidebarCollapsed: state.sidebarCollapsed, inspectorCollapsed: state.inspectorCollapsed,
+      timelineSpan: state.timelineSpan ?? null,
     },
   };
 }
@@ -80,6 +82,8 @@ export function applyScenario(sc, mode = 'replace') {
   }
   const v = sc.view || {};
   const objects = sc.objects;
+  let legacyLeft = false; // the left-panel state used to live in localStorage only
+  try { legacyLeft = localStorage.getItem('ssm.ui.leftCollapsed') === '1'; } catch { /* ignore */ }
   store.set({
     scenarioName: sc.name,
     objects,
@@ -91,6 +95,11 @@ export function applyScenario(sc, mode = 'replace') {
     toggles: { ...DEFAULT_TOGGLES, ...(v.toggles || {}) },
     markerPx: Number.isFinite(v.markerPx) ? v.markerPx : 4,
     cameraDistance: Number.isFinite(v.cameraDistance) ? v.cameraDistance : null,
+    hiddenIds: Array.isArray(v.hiddenIds) ? v.hiddenIds.filter((x) => typeof x === 'string') : [],
+    // panel layout: keep the current layout when the document does not specify one (new / example scenario)
+    sidebarCollapsed: typeof v.sidebarCollapsed === 'boolean' ? v.sidebarCollapsed : (s.sidebarCollapsed || legacyLeft),
+    inspectorCollapsed: typeof v.inspectorCollapsed === 'boolean' ? v.inspectorCollapsed : s.inspectorCollapsed,
+    timelineSpan: Number.isFinite(v.timelineSpan) && v.timelineSpan > 0 ? v.timelineSpan : null,
     measure: null,
     measureArmed: false,
     playing: false,
@@ -122,7 +131,8 @@ export function saveNow() {
   }
 }
 
-const SAVE_KEYS = new Set(['objects', 'events', 'jd', 'focus', 'selection', 'toggles', 'markerPx', 'scenarioName', 'cameraDistance']);
+const SAVE_KEYS = new Set(['objects', 'events', 'jd', 'focus', 'selection', 'toggles', 'markerPx', 'scenarioName', 'cameraDistance',
+  'hiddenIds', 'sidebarCollapsed', 'inspectorCollapsed', 'timelineSpan']);
 
 /** Debounced (500 ms, max wait 3 s) autosave on any persisted change. */
 export function startAutosave() {

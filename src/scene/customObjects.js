@@ -1,13 +1,23 @@
 // Custom objects: fixed-screen-size markers, labels with type glyphs, orbit ellipses and route paths. §6.
 import * as THREE from 'three';
 import { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
-import { existsAt, positionOf, customPath, orbitMotionElements, referencedIds, routePhase, TYPE_GLYPHS } from '../sim/custom.js';
+import { existsAt, positionOf, customPath, orbitMotionElements, referencedIds, routePhase, isFlybyStop, legData, legNbody, TYPE_GLYPHS } from '../sim/custom.js';
 import { sampleOrbit } from '../sim/ephemeris.js';
-import { makeDynamicLine, setLinePoints } from './util.js';
+import { makeDynamicLine, setLinePoints, ringTexture } from './util.js';
 import { esc } from '../ui/format.js';
 
 const MARKER_PX = 5;
-const PATH_SAMPLES = 192;
+const PATH_SAMPLES = 256;
+const FLYBY_RING_PX = 13;
+
+/** Index of the last time in a sorted list that is <= jd (0 when before the start). */
+function lastIndexAtOrBefore(jds, jd) {
+  let lo = 0, hi = jds.length - 1;
+  if (jd <= jds[0]) return 0;
+  if (jd >= jds[hi]) return hi;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (jds[mid] <= jd) lo = mid; else hi = mid; }
+  return lo;
+}
 
 const GEOMS = {
   octa: new THREE.OctahedronGeometry(1, 0),
@@ -47,11 +57,19 @@ export function createCustomObjects(scene, opts = {}) {
       p.geom.dispose();
     }
     if (e.pathMats) e.pathMats.forEach((m) => m.dispose());
+    disposeRings(e);
+  }
+
+  function disposeRings(e) {
+    for (const r of e.rings || []) { group.remove(r.sprite); r.sprite.material.map.dispose(); r.sprite.material.dispose(); }
+    e.rings = [];
   }
 
   function buildPaths(e, ctx) {
     for (const p of e.paths) { lineGroup.remove(p.past, p.future); p.geom.dispose(); }
     e.paths = [];
+    disposeRings(e);
+    e.pathSig = '';
     const o = e.obj;
     if (o.motion?.kind !== 'route') return;
     if (!e.pathMats) {
@@ -62,18 +80,50 @@ export function createCustomObjects(scene, opts = {}) {
     } else {
       e.pathMats.forEach((m) => m.color.set(o.color));
     }
-    for (const leg of customPath(o, ctx, PATH_SAMPLES)) {
+    const legs = customPath(o, ctx, PATH_SAMPLES);
+    for (const leg of legs) {
       const geom = new THREE.BufferGeometry();
       geom.setAttribute('position', new THREE.Float32BufferAttribute(leg.points.flat(), 3));
       const past = new THREE.Line(geom, e.pathMats[0]);
       const future = new THREE.Line(geom, e.pathMats[1]);
       past.frustumCulled = future.frustumCulled = false;
       lineGroup.add(past, future);
-      const p = { geom, past, future, t0: leg.t0, t1: leg.t1, origin: leg.origin, n: leg.points.length, pastRange: [0, 0], futureRange: [0, leg.points.length] };
+      const p = { geom, past, future, t0: leg.t0, t1: leg.t1, jds: leg.jds, origin: leg.origin, n: leg.points.length, pastRange: [0, 0], futureRange: [0, leg.points.length] };
       past.onBeforeRender = () => geom.setDrawRange(p.pastRange[0], p.pastRange[1]);
       future.onBeforeRender = () => geom.setDrawRange(p.futureRange[0], p.futureRange[1]);
       e.paths.push(p);
     }
+    // the N-body state of each leg: when it changes (result arrived), the path is rebuilt
+    e.pathSig = legs.map((l) => l.nbody ?? '-').join(',');
+    // flyby stops: a small ring at the stop's position at the flyby time (end of the inbound leg)
+    const m = o.motion;
+    if (m.profile === 'ballistic') {
+      for (const leg of legs) {
+        if (!isFlybyStop(m.stops, leg.leg + 1)) continue;
+        const last = leg.points[leg.points.length - 1];
+        const pos = [leg.origin[0] + last[0], leg.origin[1] + last[1], leg.origin[2] + last[2]];
+        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: ringTexture(o.color, 14), depthTest: false, depthWrite: false, transparent: true, sizeAttenuation: false }));
+        sprite.renderOrder = 4;
+        sprite.frustumCulled = false;
+        group.add(sprite);
+        e.rings.push({ sprite, pos });
+      }
+    }
+  }
+
+  /** Path signature (N-body status per leg, as in customPath) without rebuilding, to detect newly arrived results. */
+  function currentPathSig(e, ctx) {
+    const m = e.obj.motion;
+    if (m?.kind !== 'route' || !m.stops || m.stops.length < 2) return '';
+    const parts = [];
+    for (let i = 0; i < m.stops.length - 1; i++) {
+      const A = m.stops[i], B = m.stops[i + 1];
+      if (A.departJd == null || B.arriveJd == null || !(B.arriveJd > A.departJd)) continue;
+      const leg = legData(e.obj, i, ctx, 0);
+      const nb = leg.profile === 'ballistic' && leg.ballistic ? legNbody(leg) : null;
+      parts.push(leg.nbodyKey ? (nb ? (nb.ok ? 'ok' : 'failed') : 'pending') : '-');
+    }
+    return parts.join(',');
   }
 
   function buildEntry(o, ctx) {
@@ -92,7 +142,7 @@ export function createCustomObjects(scene, opts = {}) {
     opts.onLabelCreated?.(el, o.id);
     const e = {
       id: o.id, obj: o, sig: signature(o), marker, shape, label, labelEl: el, errEl: el.querySelector('.err-badge'),
-      labelW: 24 + o.name.length * 6.6, paths: [], orbitLine: null, orbitBuilt: null, marginPx: -1,
+      labelW: 24 + o.name.length * 6.6, paths: [], rings: [], pathSig: '', orbitLine: null, orbitBuilt: null, marginPx: -1,
       refsCustom: referencedIds(o).some((id) => ctx.byId.has(id)),
     };
     if (o.motion?.kind === 'orbit') {
@@ -122,16 +172,24 @@ export function createCustomObjects(scene, opts = {}) {
     lastCtxVersion = ctx.version;
   }
 
+  /** Rebuild the paths of routes whose legs gained (or lost) an N-body trajectory since they were drawn. */
+  function refreshPaths(ctx) {
+    for (const e of entries.values()) {
+      if (e.obj.motion?.kind !== 'route') continue;
+      if (currentPathSig(e, ctx) !== e.pathSig) buildPaths(e, ctx);
+    }
+  }
+
   const up = new THREE.Vector3();
 
   function update(fc) {
-    const { jd, F, camPos, camera, pxPerRad, toggles, selection, focus, ctx } = fc;
+    const { jd, F, camPos, camera, pxPerRad, toggles, selection, focus, ctx, hidden } = fc;
     up.set(0, 1, 0).applyQuaternion(camera.quaternion);
     const stackCount = new Map();
     for (const e of entries.values()) {
       const o = e.obj;
       const pinned = o.id === selection || o.id === focus;
-      let visible = (toggles.custom || pinned) && existsAt(o, jd);
+      let visible = !hidden.has(o.id) && (toggles.custom || pinned) && existsAt(o, jd);
       const W = positionOf(o.id, jd, ctx) ?? [0, 0, 0];
       let rel = [W[0] - F[0], W[1] - F[1], W[2] - F[2]];
       const m = o.motion || {};
@@ -163,7 +221,9 @@ export function createCustomObjects(scene, opts = {}) {
         const s = (offPx / pxPerRad) * camDist;
         rel = [rel[0] + up.x * s, rel[1] + up.y * s, rel[2] + up.z * s];
         camDist = Math.hypot(rel[0] - camPos.x, rel[1] - camPos.y, rel[2] - camPos.z);
-        if (p && !p.visible && !pinned) visible = false;
+        // follow the anchor's automatic hiding (zoom rules, categories) but not an explicit per-body hide:
+        // custom objects have their own visibility toggles
+        if (p && !p.visible && !p.userHidden && !pinned) visible = false;
       }
 
       e.marker.visible = visible;
@@ -202,15 +262,18 @@ export function createCustomObjects(scene, opts = {}) {
         p.past.position.set(p.origin[0] - F[0], p.origin[1] - F[1], p.origin[2] - F[2]);
         p.future.position.copy(p.past.position);
         const N = p.n - 1;
-        let k;
-        if (jd <= p.t0) k = 0;
-        else if (jd >= p.t1) k = N;
-        else k = Math.min(N, Math.max(0, Math.floor(((jd - p.t0) / (p.t1 - p.t0)) * N)));
+        const k = Math.min(N, lastIndexAtOrBefore(p.jds, jd));
         // Both lines share one geometry; their draw ranges are applied in onBeforeRender (see buildPaths).
         p.past.visible = k > 0;
         p.future.visible = k < N;
         p.pastRange[0] = 0; p.pastRange[1] = k + 1;
         p.futureRange[0] = k; p.futureRange[1] = N + 1 - k;
+      }
+      for (const r of e.rings) {
+        r.sprite.visible = showPath;
+        if (!showPath) continue;
+        r.sprite.position.set(r.pos[0] - F[0], r.pos[1] - F[1], r.pos[2] - F[2]);
+        r.sprite.scale.setScalar(FLYBY_RING_PX / pxPerRad);
       }
 
       // label
@@ -232,5 +295,5 @@ export function createCustomObjects(scene, opts = {}) {
     }
   }
 
-  return { sync, update, entries };
+  return { sync, update, refreshPaths, entries };
 }

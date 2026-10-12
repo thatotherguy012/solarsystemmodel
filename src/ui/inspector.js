@@ -1,17 +1,20 @@
 // Right sidebar: inspector for the selection with Overview · Distances · Orbit tabs. §8.
-import { AU_KM, LIGHT_S_PER_AU, GM_SUN, auDayToKmS, auDay2ToMS2, G0_M_S2 } from '../astro/constants.js';
+import { AU_KM, LIGHT_S_PER_AU, GM_SUN, auDay2ToMS2, G0_M_S2 } from '../astro/constants.js';
 import { vsub, vlen } from '../astro/vec3.js';
 import { stateToElements } from '../astro/kepler.js';
 import { formatJd } from '../astro/time.js';
 import { store, patchObject, deleteObject } from '../sim/store.js';
 import { getBody, getState, getMu, isMuEstimated, moonsOf, allBodies } from '../sim/ephemeris.js';
-import { customState, existsAt, nameOf, motionSummary, positionOf, velocityOf, muOf, routePhase, legData, TYPE_GLYPHS } from '../sim/custom.js';
+import { customState, existsAt, nameOf, motionSummary, positionOf, velocityOf, muOf, routePhase, legData, isFlybyStop, TYPE_GLYPHS } from '../sim/custom.js';
+import { onTrajectoryUpdate } from '../sim/trajectory.js';
 import { TYPE_LABELS } from '../data/catalog.js';
 import { fmtAu, fmtKm, fmtMkm, fmtDist, fmtKmS, fmtSpeedKmS, fmtLightTime, fmtG, fmtDeg, fmtDuration, fmtNum, esc } from './format.js';
+import { ballisticHtml, auditHtml, flybysHtml, routeDeltaVHtml } from './legInfo.js';
 import { confirmModal } from './modal.js';
 
 const TABS = [['overview', 'Overview'], ['distances', 'Distances'], ['orbit', 'Orbit']];
-const REFRESH_MS = 250;
+/** Throttle for live refreshes (fast enough to follow timeline scrubbing). */
+const REFRESH_MS = 100;
 
 /** State (r, v) of any id at jd. */
 function stateOf(id, jd, ctx) {
@@ -33,7 +36,7 @@ function parentOf(id, ctx) {
 
 /** @param {Object} app */
 export function initInspector(app) {
-  const host = document.getElementById('inspector');
+  const host = document.getElementById('inspector-body');
   let tab = 'overview';
   try { tab = localStorage.getItem('ssm.ui.inspectorTab') || 'overview'; } catch { /* ignore */ }
   let sortKey = 'dist', sortDir = 1;
@@ -44,7 +47,6 @@ export function initInspector(app) {
     const id = s.selection;
     if (!id) {
       host.innerHTML = `
-        <div class="panel-head"><span>Inspector</span></div>
         <div class="insp-empty">
           <p>Click a body or object (in the view or the list) to inspect it.</p>
           <p class="muted">Drag to rotate · wheel to zoom · click to select and centre.</p>
@@ -218,20 +220,21 @@ export function initInspector(app) {
       t += row('Departs', formatJd(leg.t0));
       t += row('Arrives', `${formatJd(leg.t1)} <span class="muted">(${fmtDuration(leg.T)})</span>`);
       t += row('Distance', fmtDist(leg.D));
+      let notes = '';
       if (leg.profile === 'brachistochrone') {
         t += row('Acceleration', `${fmtG(auDay2ToMS2(leg.accel) / G0_M_S2)} <span class="muted">(${auDay2ToMS2(leg.accel).toFixed(3)} m/s²)</span>`);
         t += row('Peak velocity', fmtKmS(leg.vPeak));
-        t += row('Δv', fmtKmS(leg.dv));
+        t += row('Δv', `${fmtKmS(leg.dv)} <span class="muted">(gravity-free)</span>`);
+        const au = auditHtml(leg);
+        if (au) { t += au.rows; notes = au.notes; }
       } else if (leg.profile === 'ballistic' && leg.ballistic) {
-        const bl = leg.ballistic;
-        t += row('Departure v∞', fmtSpeedKmS(auDayToKmS(bl.vinfDep)));
-        t += row('Arrival v∞', fmtSpeedKmS(auDayToKmS(bl.vinfArr)));
-        t += row('Total excess Δv', fmtSpeedKmS(auDayToKmS(bl.vinfDep + bl.vinfArr)));
-        t += row('Transfer orbit', `a ${fmtAu(bl.a)} · e ${bl.e.toFixed(4)} · q ${fmtAu(bl.rp)}`);
+        const bh = ballisticHtml(leg, s.ctx);
+        t += bh.rows;
+        notes = bh.notes;
       } else {
         t += row('Average speed', fmtKmS(leg.vAvg));
       }
-      return t + '</dl>';
+      return t + '</dl>' + notes;
     };
     if (li?.phase.kind === 'transit') {
       const leg = li.leg;
@@ -249,10 +252,13 @@ export function initInspector(app) {
     // itinerary
     html += '<table class="itin"><thead><tr><th>#</th><th>Stop</th><th>Arrive</th><th>Depart</th></tr></thead><tbody>';
     m.stops.forEach((st2, i) => {
+      const fly = isFlybyStop(m.stops, i);
       html += `<tr><td>${i + 1}</td><td>${esc(st2.ref ? nameOf(st2.ref, s.ctx) : `(${(+st2.x).toFixed(3)}, ${(+st2.y).toFixed(3)}, ${(+st2.z).toFixed(3)}) AU`)}</td>
-        <td class="mono">${st2.arriveJd != null ? formatJd(st2.arriveJd) : '—'}</td><td class="mono">${st2.departJd != null ? formatJd(st2.departJd) : '—'}</td></tr>`;
+        <td class="mono">${st2.arriveJd != null ? formatJd(st2.arriveJd) : '—'}</td><td class="mono">${fly ? '<span class="muted">flyby</span>' : st2.departJd != null ? formatJd(st2.departJd) : '—'}</td></tr>`;
     });
     html += '</tbody></table>';
+    html += flybysHtml(o, s.ctx);
+    html += routeDeltaVHtml(o, s.ctx);
     if (m.stops.length > 2) {
       html += '<details class="legs"><summary>All legs</summary>';
       for (let i = 0; i < m.stops.length - 1; i++) {
@@ -409,6 +415,8 @@ export function initInspector(app) {
     }
     if (changed.some((k) => k === 'jd' || k === 'measure' || k === 'focus' || k === 'ctx')) refresh();
   });
+  // N-body legs / gravity audits finishing in the background
+  onTrajectoryUpdate(() => refresh(true));
   shell(store.get());
   builtFor = store.get().selection;
 }
