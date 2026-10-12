@@ -3,6 +3,7 @@ import { formatJd, parseDateToJd } from '../../astro/time.js';
 import { store, upsertEvent, deleteEvent, newId } from '../../sim/store.js';
 import { openModal, h } from '../modal.js';
 import { esc } from '../format.js';
+import { appendMilestonesSection } from '../milestonesSection.js';
 
 const COLORS = ['#ffcc66', '#ff8a3d', '#ff6b6b', '#e8d44d', '#4fd18b', '#5aa9ff', '#b48cff', '#cfd6e0'];
 
@@ -73,4 +74,6 @@ export function openEvents(app, opts = {}) {
   foot.querySelector('[data-a=close]').addEventListener('click', () => modal.close());
   const unsub = store.subscribe((_s, changed) => { if (changed.includes('events')) render(); });
   render();
+  // Story tools: read-only list of the milestones derived from the routes (src/ui/milestonesSection.js)
+  appendMilestonesSection(body, app);
 }

@@ -1,0 +1,77 @@
+/* Story tools: auto milestones on the timeline, the situation report dialog, the light-lag view. */
+
+/* ------------------------------------------------------------------ timeline milestones */
+.tl-strip.has-ms { height: 50px; }
+.tl-ms-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; border-radius: var(--radius); }
+.tl-ms {
+  position: absolute; top: 26px; width: 7px; height: 10px; margin-left: -3.5px; padding: 0;
+  border: 1.5px solid var(--c); border-radius: 1px; background: rgba(11, 14, 20, 0.55);
+  cursor: pointer; pointer-events: auto; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+}
+.tl-ms[data-kind='flip'] { width: 8px; height: 8px; margin-left: -4px; top: 27px; transform: rotate(45deg); border-radius: 0; }
+.tl-ms[data-kind='flyby'] { width: 9px; height: 9px; margin-left: -4.5px; border-radius: 50%; }
+.tl-ms[data-kind='approach'] { width: 9px; height: 9px; margin-left: -4.5px; border-radius: 50%; border-style: dotted; border-width: 2px; }
+.tl-ms[data-kind='impact'] { width: 9px; height: 9px; margin-left: -4.5px; border-radius: 50%; box-shadow: 0 0 0 1.5px #ff4d4d, 0 0 6px #ff4d4d; }
+.tl-ms:hover, .tl-ms:focus-visible { background: var(--c); outline: none; box-shadow: 0 0 0 1px #fff; }
+.tl-ms[data-kind='flip']:hover, .tl-ms[data-kind='flip']:focus-visible { transform: rotate(45deg) scale(1.15); }
+.tl-ms-toggle { flex: none; }
+.tl-ms-toggle[aria-pressed='false'] { color: var(--muted); }
+.tl-ms-toggle .ms-icon { display: none; }
+/* narrow timeline column (e.g. 1251-1450 px windows): icon-only toggle so the button row does not overflow */
+.timeline { container: ssm-timeline / inline-size; }
+@container ssm-timeline (max-width: 550px) {
+  .tl-ms-toggle .ms-icon { display: inline; }
+  .tl-ms-toggle .ms-label { display: none; }
+}
+.tl-ms-swatch {
+  display: inline-block; width: 7px; height: 10px; margin: 0 5px -1px 0; border: 1.5px solid var(--c); border-radius: 1px;
+  vertical-align: baseline; box-sizing: border-box;
+}
+.tl-ms-swatch[data-kind='flip'] { width: 8px; height: 8px; transform: rotate(45deg); border-radius: 0; margin-bottom: 0; }
+.tl-ms-swatch[data-kind='flyby'], .tl-ms-swatch[data-kind='approach'], .tl-ms-swatch[data-kind='impact'] { width: 9px; height: 9px; border-radius: 50%; }
+.tl-ms-swatch[data-kind='approach'] { border-style: dotted; border-width: 2px; }
+.tl-ms-swatch[data-kind='impact'] { box-shadow: 0 0 0 1.5px #ff4d4d; }
+
+/* ------------------------------------------------------------------ Events dialog: derived milestones */
+.ms-section { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 6px; }
+.ms-section > summary { cursor: pointer; list-style-position: inside; }
+.ms-section > summary .section-title { display: inline; margin: 0; }
+.ms-section p { margin: 4px 0 6px; }
+.ms-table tr.past td { opacity: 0.6; }
+.ms-table tr.impact td { color: #ff9c9c; }
+
+/* ------------------------------------------------------------------ situation report */
+dialog.modal.report-modal { width: min(1180px, 97vw); height: min(820px, 92vh); }
+.report-modal .modal-body { display: flex; min-height: 0; overflow: hidden; }
+.rp { display: grid; grid-template-columns: minmax(250px, 320px) minmax(0, 1fr); gap: 14px; flex: 1; min-height: 0; }
+.rp-opts { overflow-y: auto; min-height: 0; padding-right: 4px; display: flex; flex-direction: column; gap: 10px; }
+.rp-grid { display: grid; grid-template-columns: 1fr; gap: 7px; }
+.rp-grid .inline input { flex: 1; min-width: 0; }
+.rp-grid select, .rp-grid input { color: var(--text); }
+.rp-grid input[type='number'] { background: var(--bg); border: 1px solid var(--line-2); border-radius: var(--radius); padding: 4px 7px; min-width: 0; }
+.rp-grid input[type='number']:focus { border-color: var(--accent); outline: none; }
+.rp-set { border: 1px solid var(--line-2); border-radius: var(--radius); padding: 4px 8px 8px; margin: 0; min-width: 0; }
+.rp-set legend { font-size: 11px; text-transform: uppercase; letter-spacing: 0.7px; color: var(--muted); padding: 0 4px; }
+.rp-set legend .icon-btn { text-transform: none; letter-spacing: 0; margin-left: 4px; color: var(--accent); }
+.rp-checks { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; }
+.rp-checks label.check { display: flex; flex-direction: row; align-items: center; gap: 5px; font-size: 12px; color: var(--text); min-width: 0; cursor: pointer; }
+.rp-checks .rp-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rp-checks .dot { margin-right: 0; }
+.rp-add { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.rp-add > span:last-child { display: flex; gap: 4px; flex: 1; min-width: 0; }
+.rp-add .ref-picker { flex: 1; min-width: 0; }
+.rp-out { display: flex; flex-direction: column; min-height: 0; min-width: 0; gap: 4px; }
+.rp-preview {
+  flex: 1; min-height: 300px; width: 100%; resize: none; white-space: pre; overflow: auto; font-size: 12px; line-height: 1.45;
+  background: var(--bg); color: #dfe5ee; tab-size: 4;
+}
+
+/* ------------------------------------------------------------------ light-lag view */
+.ll-chips { align-items: center; }
+.ll-chips .chip[data-ll='main'][aria-pressed='true'] { background: rgba(255, 170, 80, 0.16); border-color: rgba(255, 170, 80, 0.5); color: #ffe2bf; }
+.ll-caption { font-size: 11.5px; color: var(--text-2); padding: 0 8px 0 2px; white-space: nowrap; }
+.ll-caption.warn { color: var(--warn); }
+.label.ll-label {
+  pointer-events: auto; cursor: default; font-size: 10.5px; font-weight: 500; padding: 0 4px; border-radius: 3px;
+  background: rgba(8, 10, 16, 0.55); font-variant-numeric: tabular-nums; opacity: 0.92;
+}

@@ -23,6 +23,7 @@ import { openHelp } from './ui/modals/help.js';
 import { openSetCourse } from './ui/modals/setCourse.js';
 import { fmtAu, fmtKm } from './ui/format.js';
 import { AU_KM } from './astro/constants.js';
+import { initStoryTools } from './ui/storyTools.js';
 
 initEphemeris(buildCatalog());
 
@@ -109,6 +110,8 @@ app.commands = initCommandBar(app);
 initInspector(app);
 initTimebar(app);
 app.timeline = initTimeline(app);
+// Story tools (auto milestones, situation report, light-lag view): see src/ui/storyTools.js
+initStoryTools(app);
 
 // ---- overlays: camera info + measurement banner
 const camInfo = document.getElementById('camera-info');
