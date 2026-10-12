@@ -1,6 +1,7 @@
 // Help: controls, shortcuts, accuracy notes (§11), scenario format, credits.
 import { DATA_INFO } from '../../data/catalog.js';
 import { openModal } from '../modal.js';
+import { storyToolsHelpHtml } from '../storyTools.js';
 
 export function openHelp() {
   const fetched = (iso) => (iso ? iso.slice(0, 10) : 'unknown');
@@ -51,6 +52,7 @@ export function openHelp() {
           <li>The <b>Distances</b> tab lists distance and one-way / round-trip light time from the selection to everything that matters; <b>Measure to…</b> draws a persistent line to the next object you click.</li>
         </ul>
       </section>
+      ${storyToolsHelpHtml()}
       <section>
         <h3>Accuracy</h3>
         <ul>
