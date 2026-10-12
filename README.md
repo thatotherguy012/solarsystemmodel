@@ -7,6 +7,28 @@ transfers; reads off distances and light-lag between any two things; and pins st
 
 Everything runs in the browser, offline, from bundled JPL data. No accounts, no server.
 
+## Run without a terminal
+
+No installation, no Node.js, no server:
+
+- **Windows:** double-click **`Launch Solar System.cmd`** in the project folder, or
+- **any system:** double-click **`standalone/SolarSystem.html`**.
+
+Either one opens the app in your default browser straight from disk. `standalone/SolarSystem.html` is a single
+self-contained file (about 770 KB) with all code, styles and data inside it, so it works offline and you can copy
+it anywhere.
+
+You don't need to clone the repository to get it. On the GitHub repository page, either use **Code → Download ZIP**
+(unzip it, then double-click either file), or open `standalone/SolarSystem.html`, click **Download raw file**, and
+double-click the downloaded file.
+
+**Scenarios autosave inside the browser, not in a file next to the app.** Always open it with the same browser
+(and the same browser profile), or your saved work won't be there and you'll see the example scenario instead.
+Private/incognito windows forget everything when closed. Use **Export** to keep a backup `.json` file, and
+**Import** to bring a scenario into another browser or computer.
+
+After changing the code, regenerate the file with `npm run build:standalone`.
+
 ## Features
 
 - **Accurate ephemeris** in the heliocentric ecliptic J2000 frame for any date (planets valid 3000 BC – 3000 AD):
@@ -40,6 +62,7 @@ Requires Node.js 20.19+ or 22.12+ (developed with Node 22).
 npm install          # install three.js and Vite
 npm run dev          # start the dev server (http://localhost:5173)
 npm run build        # production build into dist/ (works from any sub-path)
+npm run build:standalone  # single-file build into standalone/SolarSystem.html (runs from disk)
 npm run preview      # serve the production build locally
 npm run validate     # numeric checks of the astrodynamics core against JPL Horizons
 npm run fetch-data   # re-download small-body (SBDB) and moon (Horizons) data into src/data/
@@ -190,6 +213,9 @@ The site is then served at `https://<user>.github.io/solarsystemmodel/`. The bui
 ```
 index.html                  app shell (bars, panels)
 vite.config.js              base: './'
+vite.standalone.config.js   single-file build (vite-plugin-singlefile) -> standalone/SolarSystem.html
+standalone/SolarSystem.html prebuilt self-contained app; double-click to run from disk
+Launch Solar System.cmd     Windows launcher for the standalone file
 scripts/fetch-data.mjs      downloads SBDB + Horizons data into src/data/*.json
 scripts/validate-astro.mjs  numeric validation of src/astro/
 src/main.js                 bootstrap
