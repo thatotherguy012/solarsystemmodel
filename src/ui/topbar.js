@@ -1,10 +1,14 @@
-// Top bar (scenario name, search, actions) and the view toolbar over the canvas (toggles, marker size, View menu).
-import { store } from '../sim/store.js';
+// Top bar (scenario name, search, + Add, Scenario ▾, Tools ▾, Simple / Full switch, Help) and the view toolbar over
+// the canvas (visibility chips, marker size, View menu with the rarely used layers, "Following: X" pill, first-run tip).
+import { store, setDetail } from '../sim/store.js';
+import { nameOf } from '../sim/custom.js';
 
 const CHIPS = [
-  ['orbits', 'Orbits'], ['labels', 'Labels'], ['grid', 'Grid'], ['moons', 'Moons'],
-  ['asteroids', 'Asteroids'], ['comets', 'Comets'], ['custom', 'Custom'],
+  ['orbits', 'Orbits', 'orbit lines'], ['labels', 'Labels', 'names'], ['moons', 'Moons', 'moons'],
+  ['asteroids', 'Asteroids', 'named asteroids, near-Earth objects, Trojans and centaurs'], ['comets', 'Comets', 'comets'],
+  ['custom', 'Custom', 'your ships, stations and bases'], ['belt', 'Belt', 'the asteroid-belt cloud (every asteroid larger than ~10 km)'],
 ];
+const TIP_KEY = 'ssm.ui.tipDismissed';
 
 /**
  * @param {Object} app application facade (see main.js)
@@ -56,23 +60,18 @@ export function initTopbar(app) {
 
   // ---- visibility chips
   const chips = $('toggle-chips');
-  for (const [key, label] of CHIPS) {
+  for (const [key, label, what] of CHIPS) {
     const b = document.createElement('button');
     b.className = 'chip';
     b.dataset.key = key;
     b.textContent = label;
-    b.title = `Show/hide ${label.toLowerCase()}`;
+    b.title = `Show or hide ${what}`;
     b.addEventListener('click', () => {
       const t = store.get().toggles;
       store.set({ toggles: { ...t, [key]: !t[key] } });
     });
     chips.appendChild(b);
   }
-  const renderChips = () => {
-    const t = store.get().toggles;
-    for (const b of chips.children) b.setAttribute('aria-pressed', String(!!t[b.dataset.key]));
-  };
-  renderChips();
 
   // ---- marker size
   const slider = $('marker-size'), sliderVal = $('marker-size-val');
@@ -84,35 +83,123 @@ export function initTopbar(app) {
   renderSlider();
   slider.addEventListener('input', () => store.set({ markerPx: Number(slider.value) }));
 
-  // ---- View menu
-  const menuBtn = $('view-menu-btn'), menu = $('view-menu');
-  const closeMenu = () => { menu.hidden = true; menuBtn.setAttribute('aria-expanded', 'false'); };
-  menuBtn.addEventListener('click', (ev) => {
-    ev.stopPropagation();
-    menu.hidden = !menu.hidden;
-    menuBtn.setAttribute('aria-expanded', String(!menu.hidden));
+  // ---- drop-down menus (View, Scenario, Tools)
+  const menus = [['view-menu-btn', 'view-menu'], ['scenario-menu-btn', 'scenario-menu'], ['tools-menu-btn', 'tools-menu']]
+    .map(([b, m]) => ({ btn: $(b), menu: $(m) }));
+  const closeMenus = () => {
+    let any = false;
+    for (const { btn, menu } of menus) {
+      if (!menu.hidden) any = true;
+      menu.hidden = true;
+      btn.setAttribute('aria-expanded', 'false');
+    }
+    return any;
+  };
+  for (const { btn, menu } of menus) {
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const open = menu.hidden;
+      closeMenus();
+      menu.hidden = !open;
+      btn.setAttribute('aria-expanded', String(open));
+    });
+  }
+  document.addEventListener('click', (ev) => {
+    if (!menus.some(({ menu, btn }) => menu.contains(ev.target) || btn.contains(ev.target))) closeMenus();
   });
-  menu.addEventListener('click', (ev) => {
+  app.closeMenus = closeMenus;
+
+  $('view-menu').addEventListener('click', (ev) => {
+    const tg = ev.target.closest('button[data-toggle]');
+    if (tg) {
+      const t = store.get().toggles;
+      store.set({ toggles: { ...t, [tg.dataset.toggle]: !t[tg.dataset.toggle] } });
+      return; // keep the menu open for further toggles
+    }
     const b = ev.target.closest('button[data-view]');
     if (!b) return;
     app.view.setView(b.dataset.view);
-    closeMenu();
+    closeMenus();
   });
-  document.addEventListener('click', (ev) => { if (!menu.hidden && !menu.contains(ev.target)) closeMenu(); });
-  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeMenu(); });
+  $('scenario-menu').addEventListener('click', (ev) => {
+    const a = ev.target.closest('button[data-act]')?.dataset.act;
+    if (!a) return;
+    closeMenus();
+    if (a === 'import') app.openImport();
+    else if (a === 'export') app.exportScenario();
+    else if (a === 'new') app.newScenario();
+    else if (a === 'example') app.loadExample();
+  });
+  $('tools-menu').addEventListener('click', (ev) => {
+    const a = ev.target.closest('button[data-act]')?.dataset.act;
+    if (!a) return;
+    closeMenus();
+    if (a === 'planner') app.openPlanner();
+    else if (a === 'events') app.openEvents();
+  });
+
+  const renderToggles = () => {
+    const t = store.get().toggles;
+    for (const b of chips.children) b.setAttribute('aria-pressed', String(!!t[b.dataset.key]));
+    for (const b of $('view-menu').querySelectorAll('[data-toggle]')) b.setAttribute('aria-checked', String(!!t[b.dataset.toggle]));
+  };
+  renderToggles();
 
   // ---- actions
   $('btn-add').addEventListener('click', () => app.openEditor(null));
-  $('btn-planner').addEventListener('click', () => app.openPlanner());
-  $('btn-events').addEventListener('click', () => app.openEvents());
-  $('btn-import').addEventListener('click', () => app.openImport());
-  $('btn-export').addEventListener('click', () => app.exportScenario());
   $('btn-help').addEventListener('click', () => app.openHelp());
+
+  // ---- Simple / Full
+  const sw = document.querySelector('.seg-switch');
+  sw.addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-detail]');
+    if (b) setDetail(b.dataset.detail);
+  });
+  const renderDetail = () => {
+    const d = store.get().detail;
+    for (const b of sw.querySelectorAll('[data-detail]')) b.setAttribute('aria-pressed', String(b.dataset.detail === d));
+    document.getElementById('app').dataset.detail = d;
+  };
+  renderDetail();
+
+  // ---- "Following: X" pill
+  const pill = $('follow-pill');
+  const pillName = pill.querySelector('[data-f=name]');
+  const sunBtn = pill.querySelector('[data-f=sun]'), reBtn = pill.querySelector('[data-f=recentre]');
+  sunBtn.addEventListener('click', () => (store.get().focus === 'sun' ? app.view.recentre() : store.set({ focus: 'sun' })));
+  reBtn.addEventListener('click', () => app.view.recentre());
+  let lastPill = '';
+  const renderPill = (panned = false) => {
+    const s = store.get();
+    const key = `${s.focus}|${panned}|${s.objects === lastObjs}`;
+    if (key === lastPill) return;
+    lastPill = key;
+    lastObjs = s.objects;
+    pillName.textContent = nameOf(s.focus, s.ctx);
+    sunBtn.hidden = s.focus === 'sun' && !panned;
+    sunBtn.textContent = s.focus === 'sun' ? 'Re-centre on the Sun' : 'Follow Sun';
+    reBtn.hidden = !panned || s.focus === 'sun';
+  };
+  let lastObjs = null;
+  renderPill();
+  app.view.onFrame(({ panned }) => renderPill(panned));
+
+  // ---- first-run tip strip
+  const tipEl = $('tip-strip');
+  let dismissed = false;
+  try { dismissed = localStorage.getItem(TIP_KEY) === '1'; } catch { /* ignore */ }
+  tipEl.hidden = dismissed;
+  tipEl.querySelector('[data-f=dismiss]').addEventListener('click', () => {
+    tipEl.hidden = true;
+    try { localStorage.setItem(TIP_KEY, '1'); } catch { /* ignore */ }
+  });
 
   store.subscribe((s, changed) => {
     if (changed.includes('scenarioName')) renderName();
-    if (changed.includes('toggles')) renderChips();
+    if (changed.includes('toggles')) renderToggles();
     if (changed.includes('markerPx')) renderSlider();
+    if (changed.includes('detail')) renderDetail();
+    if (changed.includes('focus') || changed.includes('objects')) { lastPill = ''; renderPill(); }
     if (changed.includes('search') && search.value !== s.search) search.value = s.search;
   });
 }

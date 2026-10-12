@@ -17,12 +17,29 @@
         </div>
         <div class="spacer"></div>
         <nav class="actions" aria-label="Main actions">
-          <button id="btn-add" class="btn primary" title="Add a ship, station, base…">＋ Object</button>
-          <button id="btn-planner" class="btn" title="Travel planner">Planner</button>
-          <button id="btn-events" class="btn" title="Story events">Events</button>
-          <button id="btn-import" class="btn" title="Import or start a scenario">Import</button>
-          <button id="btn-export" class="btn" title="Download the scenario as JSON">Export</button>
-          <button id="btn-help" class="btn" title="Help and accuracy notes">Help</button>
+          <button id="btn-add" class="btn primary" title="Add a ship, fleet, station, base or probe">＋ Add</button>
+          <div class="menu">
+            <button id="scenario-menu-btn" class="btn" aria-haspopup="true" aria-expanded="false" title="Import, export or start a scenario">Scenario ▾</button>
+            <div id="scenario-menu" class="menu-pop right" hidden role="menu">
+              <button role="menuitem" data-act="import">Import…</button>
+              <button role="menuitem" data-act="export">Export (download .json)</button>
+              <hr />
+              <button role="menuitem" data-act="new">New empty scenario…</button>
+              <button role="menuitem" data-act="example">Load the example scenario…</button>
+            </div>
+          </div>
+          <div class="menu">
+            <button id="tools-menu-btn" class="btn" aria-haspopup="true" aria-expanded="false" title="Travel planner and story events">Tools ▾</button>
+            <div id="tools-menu" class="menu-pop right" hidden role="menu">
+              <button role="menuitem" data-act="planner">Travel planner…</button>
+              <button role="menuitem" data-act="events">Story events…</button>
+            </div>
+          </div>
+          <div class="seg-switch" role="group" aria-label="Detail level" title="Simple: plain-language summaries. Full: every technical table.">
+            <button data-detail="simple" aria-pressed="true" title="Plain-language summaries (technical tables behind “Details”)">Simple</button>
+            <button data-detail="full" aria-pressed="false" title="Show every technical table">Full</button>
+          </div>
+          <button id="btn-help" class="btn" title="Help, controls and accuracy notes">Help</button>
         </nav>
       </header>
 
@@ -50,17 +67,32 @@
             <span id="marker-size-val" class="mono"></span>
           </label>
           <div class="menu">
-            <button id="view-menu-btn" class="btn small" aria-haspopup="true" aria-expanded="false">View ▾</button>
+            <button id="view-menu-btn" class="btn small" aria-haspopup="true" aria-expanded="false" title="Camera views and extra layers">View ▾</button>
             <div id="view-menu" class="menu-pop" hidden role="menu">
               <button role="menuitem" data-view="top">Top-down</button>
               <button role="menuitem" data-view="oblique">Oblique (35°)</button>
               <hr />
               <button role="menuitem" data-view="inner">Inner system (3.5 AU)</button>
+              <button role="menuitem" data-view="belt">Asteroid belt, top-down (13 AU)</button>
               <button role="menuitem" data-view="outer">Outer system (45 AU)</button>
               <button role="menuitem" data-view="kuiper">Kuiper belt (110 AU)</button>
               <hr />
               <button role="menuitem" data-view="frame">Frame selection</button>
+              <button role="menuitem" data-view="recentre">Re-centre on the followed object (C)</button>
+              <hr />
+              <button role="menuitemcheckbox" data-toggle="grid" aria-checked="true">Ecliptic grid</button>
+              <button role="menuitemcheckbox" data-toggle="kirkwood" aria-checked="false">Kirkwood gaps (belt)</button>
+              <button role="menuitemcheckbox" data-toggle="beltMean" aria-checked="false" title="Draw each asteroid at its average distance from the Sun (semi-major axis): the resonance gaps then show clearly">Belt at average distance (shows the gaps)</button>
             </div>
+          </div>
+          <div id="follow-pill" class="follow-pill" title="The camera follows this object through time">
+            <span>Following: <b data-f="name"></b></span>
+            <button class="pill-btn" data-f="sun" title="Centre the camera on the Sun">Follow Sun</button>
+            <button class="pill-btn" data-f="recentre" title="Bring the view back onto the followed object (C or double-click it)" hidden>Re-centre</button>
+          </div>
+          <div id="tip-strip" class="tip-strip" hidden>
+            <span><b>Tip:</b> click a body to select · drag to rotate · right-drag to pan · scroll to zoom · select a ship and press <kbd>G</kbd> to send it somewhere</span>
+            <button class="icon-btn small" data-f="dismiss" title="Dismiss this tip" aria-label="Dismiss this tip">✕</button>
           </div>
         </div>
         <div id="camera-info" class="overlay-info mono"></div>

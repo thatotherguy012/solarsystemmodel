@@ -107,10 +107,7 @@ export function initTimebar(app) {
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
     const tgt = ev.target;
     const typing = tgt instanceof HTMLElement && (tgt.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(tgt.tagName));
-    if (ev.key === 'Escape') {
-      if (store.get().measureArmed) store.set({ measureArmed: false });
-      return;
-    }
+    // Esc is handled centrally (src/ui/commandBar.js): menus, targeting, measuring, then deselect
     if (typing || modalOpen()) return;
     switch (ev.key) {
       case ' ': ev.preventDefault(); togglePlay(); break;

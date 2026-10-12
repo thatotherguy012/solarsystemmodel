@@ -15,6 +15,26 @@ export function doExport(app) {
   }
 }
 
+/** Start a new empty scenario (after a confirmation). Returns true when done. */
+export async function newScenario(app) {
+  if (!(await confirmModal('New scenario', 'Clear all custom objects and events and start an empty scenario? (Export first if you want to keep the current one.)', 'Clear'))) return false;
+  applyScenario(emptyScenario(), 'replace');
+  saveNow();
+  app.afterScenarioLoad();
+  app.toast('Started a new empty scenario', 'success');
+  return true;
+}
+
+/** Replace the current scenario with the example (after a confirmation). Returns true when done. */
+export async function loadExample(app) {
+  if (!(await confirmModal('Load example', 'Replace the current scenario with the example scenario (dated relative to today)?', 'Load example'))) return false;
+  applyScenario(exampleScenario(), 'replace');
+  saveNow();
+  app.afterScenarioLoad();
+  app.toast('Loaded the example scenario', 'success');
+  return true;
+}
+
 /** @param {Object} app */
 export function openImport(app) {
   const body = h(`<div class="import">
@@ -74,20 +94,6 @@ export function openImport(app) {
     modal.close();
     app.toast(`Loaded ${parsed.name}`, 'success');
   });
-  body.querySelector('[data-a=new]').addEventListener('click', async () => {
-    if (!(await confirmModal('New scenario', 'Clear all custom objects and events and start an empty scenario? (Export first if you want to keep the current one.)', 'Clear'))) return;
-    applyScenario(emptyScenario(), 'replace');
-    saveNow();
-    app.afterScenarioLoad();
-    modal.close();
-    app.toast('Started a new empty scenario', 'success');
-  });
-  body.querySelector('[data-a=example]').addEventListener('click', async () => {
-    if (!(await confirmModal('Load example', 'Replace the current scenario with the example scenario (dated relative to today)?', 'Load example'))) return;
-    applyScenario(exampleScenario(), 'replace');
-    saveNow();
-    app.afterScenarioLoad();
-    modal.close();
-    app.toast('Loaded the example scenario', 'success');
-  });
+  body.querySelector('[data-a=new]').addEventListener('click', async () => { if (await newScenario(app)) modal.close(); });
+  body.querySelector('[data-a=example]').addEventListener('click', async () => { if (await loadExample(app)) modal.close(); });
 }

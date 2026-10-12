@@ -1,9 +1,9 @@
-// three.js setup, render loop, focus-relative origin, camera views/transitions, picking, label declutter. §6.
+// three.js setup, render loop, focus-relative origin, camera views/transitions, panning, picking, label declutter. §6.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
 import { AU_KM } from '../astro/constants.js';
-import { store, hiddenSetOf } from '../sim/store.js';
+import { store, hiddenSetOf, selectedIds } from '../sim/store.js';
 import { tick } from '../sim/clock.js';
 import { getBody, hasBody } from '../sim/ephemeris.js';
 import { positionOf, routePhase, existsAt } from '../sim/custom.js';
@@ -12,12 +12,16 @@ import { createCustomObjects } from './customObjects.js';
 import { createGrid } from './grid.js';
 import { createStarfield } from './starfield.js';
 import { createMeasure } from './measure.js';
+import { createBelt } from './belt.js';
+import { createPreview } from './preview.js';
 import { ringTexture, easeOut } from './util.js';
 
 const FOV = 50;
 const TRANSITION_S = 0.6;
 const PICK_PX = 14;
 const DRAG_PX = 5;
+/** Farthest point (AU from the Sun) accepted as a click target on the ecliptic plane. */
+const MAX_POINT_AU = 200;
 
 /**
  * Camera distance (AU) to use when focusing an object (§6): max(6 R, 2.5 × largest moon orbit, 1e-5 AU),
@@ -49,7 +53,8 @@ export function focusDistanceFor(id, jd, ctx, depth = 0) {
 /**
  * Create the 3D view inside `container`.
  * @param {HTMLElement} container
- * @param {{ onPick:(id:string)=>void, onLabelCreated?:(el:HTMLElement,id:string)=>void }} opts
+ * @param {{ onPick:(id:string, ev:PointerEvent)=>void, onEmptyClick?:(ev:PointerEvent)=>void,
+ *   onHover?:(id:string|null, ev:PointerEvent|null)=>void, onLabelCreated?:(el:HTMLElement,id:string)=>void }} opts
  */
 export function createRenderer(container, opts) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
@@ -59,6 +64,10 @@ export function createRenderer(container, opts) {
   const labelRenderer = new CSS2DRenderer();
   labelRenderer.domElement.className = 'label-layer';
   container.appendChild(labelRenderer.domElement);
+  const tip = document.createElement('div');
+  tip.className = 'view-tip';
+  tip.hidden = true;
+  container.appendChild(tip);
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color('#03050a');
@@ -67,8 +76,11 @@ export function createRenderer(container, opts) {
   camera.position.set(0, -3.5 * Math.cos(35 * Math.PI / 180), 3.5 * Math.sin(35 * Math.PI / 180));
   camera.lookAt(0, 0, 0);
 
+  // Right-drag (or shift + left-drag) pans: controls.target becomes an offset from the focused object (the view keeps
+  // following the focus through time while panned). Left-drag rotates about the target, the wheel zooms.
   const controls = new OrbitControls(camera, container);
-  controls.enablePan = false;
+  controls.enablePan = true;
+  controls.screenSpacePanning = true;
   controls.enableDamping = true;
   controls.dampingFactor = 0.09;
   controls.zoomSpeed = 2.2;
@@ -82,14 +94,19 @@ export function createRenderer(container, opts) {
 
   const starfield = createStarfield(scene);
   const grid = createGrid(scene);
+  const belt = createBelt(scene);
   const bodies = createBodies(scene, { onLabelCreated: opts.onLabelCreated });
   const custom = createCustomObjects(scene, { onLabelCreated: opts.onLabelCreated });
   const measure = createMeasure(scene);
+  const preview = createPreview(scene);
 
   const selRing = new THREE.Sprite(new THREE.SpriteMaterial({ map: ringTexture('#5aa9ff'), depthTest: false, depthWrite: false, transparent: true, sizeAttenuation: false }));
   selRing.renderOrder = 20;
   selRing.frustumCulled = false;
   scene.add(selRing);
+  /** rings for shift-click multi-selection */
+  const multiRings = [];
+  const multiTex = ringTexture('#ffd166');
 
   let width = 1, height = 1, pxPerRad = 1;
   function resize() {
@@ -109,7 +126,7 @@ export function createRenderer(container, opts) {
 
   // ---------------------------------------------------------------- focus & camera transitions
   let displayedFocus = store.get().focus;
-  /** @type {null | {fromPos:number[], toId:string, t0:number, d0:number, d1:number, dir0:THREE.Vector3, dir1:THREE.Vector3}} */
+  /** @type {null | {fromPos:number[], toId:string, t0:number, d0:number, d1:number, dir0:THREE.Vector3, dir1:THREE.Vector3, T0:THREE.Vector3, T1:THREE.Vector3}} */
   let transition = null;
   let lastF = [0, 0, 0];
 
@@ -117,18 +134,33 @@ export function createRenderer(container, opts) {
     return positionOf(id, jd, ctx) ?? [0, 0, 0];
   }
 
+  /** Distance from the camera to the orbit target (the zoom level). */
+  const camDistance = () => camera.position.distanceTo(controls.target);
+
   /**
-   * Start a camera move: to focus `id` (optional), to distance d1 (optional), to direction dir1 (optional).
+   * Start a camera move: to focus `id` (optional), to distance d1 (optional), to direction dir1 (optional). A focus
+   * change or `recentre` also brings the pan offset back to the focused object.
    */
-  function moveCamera({ id = null, distance = null, dir = null, animate = true } = {}) {
+  function moveCamera({ id = null, distance = null, dir = null, animate = true, recentre = false } = {}) {
     const s = store.get();
-    const d0 = camera.position.length();
-    const dir0 = camera.position.clone().normalize();
+    // never let a bad request (or an already broken camera) poison the camera with NaN
+    if (!Number.isFinite(camera.position.lengthSq()) || camDistance() === 0) camera.position.set(0, -1, 1).add(controls.target);
+    if (dir && !Number.isFinite(dir.lengthSq() / dir.lengthSq())) dir = null;
+    if (!(distance > 0) || !Number.isFinite(distance)) distance = null;
+    // drop any rotate / pan inertia still decaying from a drag, so it does not resume after the move
+    controls._sphericalDelta?.set(0, 0, 0);
+    controls._panOffset?.set(0, 0, 0);
+    if (controls._scale != null) controls._scale = 1;
+    const d0 = camDistance();
+    const dir0 = camera.position.clone().sub(controls.target).normalize();
+    const toId = id ?? displayedFocus;
+    const resetPan = recentre || toId !== displayedFocus;
     transition = {
-      fromPos: lastF.slice(), toId: id ?? displayedFocus, t0: performance.now(), d0, d1: distance ?? d0,
+      fromPos: lastF.slice(), toId, t0: performance.now(), d0, d1: distance ?? d0,
       dir0, dir1: dir ? dir.clone().normalize() : dir0.clone(), dur: animate ? TRANSITION_S : 0,
+      T0: controls.target.clone(), T1: resetPan ? new THREE.Vector3() : controls.target.clone(),
     };
-    displayedFocus = transition.toId;
+    displayedFocus = toId;
     if (id && s.focus !== id) store.set({ focus: id });
   }
 
@@ -137,6 +169,7 @@ export function createRenderer(container, opts) {
       moveCamera({ id: s.focus, distance: focusDistanceFor(s.focus, s.jd, s.ctx) });
     }
     if (changed.includes('objects') || changed.includes('ctx')) custom.sync(s.objects, s.ctx);
+    if (changed.includes('command')) setCursor();
   });
 
   const dirFor = (elevDeg, fromDir) => {
@@ -148,19 +181,21 @@ export function createRenderer(container, opts) {
   /** Apply a named view from the View menu. */
   function setView(name) {
     const s = store.get();
-    const cur = camera.position.clone().normalize();
+    const cur = camera.position.clone().sub(controls.target).normalize();
     if (Math.hypot(cur.x, cur.y) < 1e-3) cur.set(0, -1, 0);
     switch (name) {
       case 'top': moveCamera({ dir: new THREE.Vector3(0, -1e-4, 1) }); break;
       case 'oblique': moveCamera({ dir: dirFor(35, cur) }); break;
-      case 'inner': moveCamera({ id: 'sun', distance: 3.5, dir: dirFor(35, cur) }); break;
-      case 'outer': moveCamera({ id: 'sun', distance: 45, dir: dirFor(35, cur) }); break;
-      case 'kuiper': moveCamera({ id: 'sun', distance: 110, dir: dirFor(35, cur) }); break;
+      case 'inner': moveCamera({ id: 'sun', distance: 3.5, dir: dirFor(35, cur), recentre: true }); break;
+      case 'belt': moveCamera({ id: 'sun', distance: 13, dir: new THREE.Vector3(0, -1e-4, 1), recentre: true }); break;
+      case 'outer': moveCamera({ id: 'sun', distance: 45, dir: dirFor(35, cur), recentre: true }); break;
+      case 'kuiper': moveCamera({ id: 'sun', distance: 110, dir: dirFor(35, cur), recentre: true }); break;
       case 'frame': {
         const id = s.selection ?? s.focus;
-        moveCamera({ id, distance: focusDistanceFor(id, s.jd, s.ctx) });
+        moveCamera({ id, distance: focusDistanceFor(id, s.jd, s.ctx), recentre: true });
         break;
       }
+      case 'recentre': moveCamera({ recentre: true }); break;
       default: break;
     }
   }
@@ -190,6 +225,12 @@ export function createRenderer(container, opts) {
     return best;
   }
 
+  const targeting = () => !!store.get().command;
+  function setCursor() {
+    container.style.cursor = targeting() ? (hoverId ? 'pointer' : 'crosshair') : hoverId ? 'pointer' : '';
+    container.classList.toggle('targeting', targeting());
+  }
+
   function setHover(id) {
     if (id === hoverId) return;
     const prev = hoverId && lastItems.find((i) => i.id === hoverId);
@@ -197,8 +238,20 @@ export function createRenderer(container, opts) {
     hoverId = id;
     const cur = id && lastItems.find((i) => i.id === id);
     if (cur?.labelEl) cur.labelEl.classList.add('hover');
-    container.style.cursor = id ? 'pointer' : '';
+    setCursor();
   }
+
+  /** Show / hide the small tooltip at container coordinates (x, y). */
+  function showTip(html, x, y) {
+    if (!html) { tip.hidden = true; return; }
+    tip.innerHTML = html;
+    tip.hidden = false;
+    const w = tip.offsetWidth, h = tip.offsetHeight;
+    tip.style.left = `${Math.min(Math.max(4, x + 14), width - w - 4)}px`;
+    tip.style.top = `${Math.min(Math.max(4, y + 16), height - h - 4)}px`;
+  }
+
+  const localXY = (ev) => { const r = container.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; };
 
   let down = null;
   container.addEventListener('pointerdown', (ev) => {
@@ -214,20 +267,55 @@ export function createRenderer(container, opts) {
     if (moved > DRAG_PX) return;
     let id = labelId ?? ev.target.closest?.('.label[data-id]')?.dataset.id ?? null;
     if (!id) {
-      const r = container.getBoundingClientRect();
-      id = pickAt(ev.clientX - r.left, ev.clientY - r.top);
+      const [x, y] = localXY(ev);
+      id = pickAt(x, y);
     }
-    if (id) opts.onPick(id);
+    if (id) opts.onPick(id, ev);
+    else opts.onEmptyClick?.(ev);
   });
+  container.addEventListener('dblclick', (ev) => {
+    const labelId = ev.target.closest?.('.label[data-id]')?.dataset.id ?? null;
+    const [x, y] = localXY(ev);
+    const id = labelId ?? pickAt(x, y);
+    if (!id || targeting()) return;
+    if (id === displayedFocus) moveCamera({ recentre: true });
+    else store.set({ focus: id, selection: id, multiSelection: [] });
+  });
+  let lastMove = null;
   container.addEventListener('pointermove', (ev) => {
-    if (ev.buttons) return;
+    if (ev.buttons) { if (tip.hidden === false && !targeting()) showTip(null); return; }
+    lastMove = ev;
     const labelEl = ev.target.closest?.('.label[data-id]');
-    if (labelEl) { setHover(labelEl.dataset.id); return; }
-    const r = container.getBoundingClientRect();
-    setHover(pickAt(ev.clientX - r.left, ev.clientY - r.top));
+    const [x, y] = localXY(ev);
+    const id = labelEl ? labelEl.dataset.id : pickAt(x, y);
+    setHover(id);
+    if (opts.onHover?.(id, ev)) return; // the command bar shows its own tooltip while targeting
+    if (!id && store.get().toggles.belt) {
+      const a = belt.pickAt(x, y);
+      showTip(a ? `<b>${escHtml(a.name)}</b><span class="muted"> · a ${a.a.toFixed(3)} AU · H ${a.H.toFixed(1)} · ${escHtml(a.zone)}</span>` : null, x, y);
+    } else showTip(null);
   });
-  container.addEventListener('pointerleave', () => setHover(null));
-  controls.addEventListener('end', () => store.set({ cameraDistance: camera.position.length() }));
+  container.addEventListener('pointerleave', () => { setHover(null); showTip(null); lastMove = null; opts.onHover?.(null, null); });
+  controls.addEventListener('end', () => store.set({ cameraDistance: camDistance() }));
+
+  /**
+   * Heliocentric point on the ecliptic plane (z = 0) under the pointer, or null when the ray misses it (looking
+   * away from the plane or the hit is farther than 200 AU from the Sun).
+   */
+  function eclipticPointAt(clientX, clientY) {
+    const r = container.getBoundingClientRect();
+    const nx = ((clientX - r.left) / width) * 2 - 1, ny = -(((clientY - r.top) / height) * 2 - 1);
+    const p = new THREE.Vector3(nx, ny, 0.5).unproject(camera);
+    const o = camera.position;
+    const d = p.sub(o).normalize();
+    const F = lastF;
+    if (Math.abs(d.z) < 1e-9) return null;
+    const t = (-F[2] - o.z) / d.z;
+    if (!(t > 0)) return null;
+    const hx = o.x + d.x * t + F[0], hy = o.y + d.y * t + F[1];
+    if (Math.hypot(hx, hy) > MAX_POINT_AU) return null;
+    return [hx, hy, 0];
+  }
 
   // ---------------------------------------------------------------- label declutter
   function declutter(items) {
@@ -261,7 +349,7 @@ export function createRenderer(container, opts) {
     const s = store.get();
     const { jd, ctx } = s;
 
-    // camera transition (focus offset tween + distance/direction tween)
+    // camera transition (focus offset tween + distance/direction tween + pan offset back to the focus)
     let F;
     if (transition) {
       const u = transition.dur > 0 ? (now - transition.t0) / (transition.dur * 1000) : 1;
@@ -270,7 +358,8 @@ export function createRenderer(container, opts) {
       F = [0, 1, 2].map((k) => transition.fromPos[k] + (to[k] - transition.fromPos[k]) * e);
       const d = Math.exp(Math.log(transition.d0) + (Math.log(transition.d1) - Math.log(transition.d0)) * e);
       const dir = transition.dir0.clone().lerp(transition.dir1, e).normalize();
-      camera.position.copy(dir.multiplyScalar(d));
+      controls.target.copy(transition.T0).lerp(transition.T1, e);
+      camera.position.copy(controls.target).add(dir.multiplyScalar(d));
       if (u >= 1) { transition = null; store.set({ cameraDistance: d }); }
     } else {
       F = worldPos(displayedFocus, jd, ctx);
@@ -280,38 +369,53 @@ export function createRenderer(container, opts) {
     const fb = getBody(displayedFocus);
     controls.minDistance = Math.max(2e-7, fb ? (fb.radiusKm / AU_KM) * 1.15 : 2e-7);
     if (!transition) controls.update();
-    else camera.lookAt(0, 0, 0);
+    else camera.lookAt(controls.target);
     camera.updateMatrixWorld();
 
     sunLight.position.set(-F[0], -F[1], -F[2]);
     const fc = {
-      jd, F, ctx, camera, camPos: camera.position, pxPerRad, width, height, toggles: s.toggles, markerPx: s.markerPx,
+      jd, F, ctx, camera, camPos: camera.position, camDistance: camDistance(), pxPerRad, width, height, toggles: s.toggles, markerPx: s.markerPx,
       selection: s.selection, focus: displayedFocus, measure: s.measure, items: [], screen: new Map(), project,
-      hidden: hiddenSetOf(s),
+      hidden: hiddenSetOf(s), playing: s.playing, rate: s.rate,
     };
     starfield.update(fc);
     grid.update(fc);
+    belt.update(fc);
     bodies.update(fc);
     custom.update(fc);
     measure.update(fc);
+    preview.update(fc);
 
-    // selection ring
+    // selection ring (+ yellow rings for the other ships of a multi-selection)
     const sel = s.selection && fc.screen.get(s.selection);
     selRing.visible = !!(sel && sel.visible && !sel.behind && sel.r < 40); // large discs need no ring
     if (selRing.visible) {
       selRing.position.set(sel.rel[0], sel.rel[1], sel.rel[2]);
       selRing.scale.setScalar(Math.max(20, 2 * Math.min(sel.r, 2000) + 12) / pxPerRad);
     }
-    if (selectedLabelId !== s.selection) {
-      for (const it of fc.items) if (it.labelEl) it.labelEl.classList.toggle('selected', it.id === s.selection);
-      selectedLabelId = s.selection;
+    const extra = s.multiSelection;
+    while (multiRings.length < extra.length) {
+      const r = new THREE.Sprite(new THREE.SpriteMaterial({ map: multiTex, depthTest: false, depthWrite: false, transparent: true, sizeAttenuation: false }));
+      r.renderOrder = 20; r.frustumCulled = false; scene.add(r); multiRings.push(r);
+    }
+    multiRings.forEach((r, k) => {
+      const it = k < extra.length ? fc.screen.get(extra[k]) : null;
+      r.visible = !!(it && it.visible && !it.behind);
+      if (r.visible) { r.position.set(it.rel[0], it.rel[1], it.rel[2]); r.scale.setScalar(20 / pxPerRad); }
+    });
+    const selKey = selectedIds(s).join(',');
+    if (selectedLabelId !== selKey) {
+      const set = new Set(selectedIds(s));
+      for (const it of fc.items) if (it.labelEl) it.labelEl.classList.toggle('selected', set.has(it.id));
+      selectedLabelId = selKey;
     }
 
     declutter(fc.items);
     renderer.render(scene, camera);
     labelRenderer.render(scene, camera);
     lastItems = fc.items;
-    for (const fn of infoListeners) fn({ distance: camera.position.length(), focus: displayedFocus, jd });
+    const panned = controls.target.lengthSq() > 0 && !transition;
+    for (const fn of infoListeners) fn({ distance: camDistance(), focus: displayedFocus, jd, panned, F });
     requestAnimationFrame(frame);
   }
 
@@ -324,17 +428,31 @@ export function createRenderer(container, opts) {
   return {
     setView,
     moveCamera,
-    /** Subscribe to per-frame camera info ({distance, focus, jd}). */
+    /** Bring the pan offset back to the focused object. */
+    recentre() { moveCamera({ recentre: true }); },
+    /** Subscribe to per-frame camera info ({distance, focus, jd, panned, F}). */
     onFrame(fn) { infoListeners.add(fn); return () => infoListeners.delete(fn); },
     /** Re-sync custom-object visuals (e.g. after a bulk import). */
     syncCustom() { const s = store.get(); custom.sync(s.objects, s.ctx); },
     /** Redraw route paths whose N-body trajectories have arrived since they were built. */
     refreshPaths() { custom.refreshPaths(store.get().ctx); },
+    /** Command preview: heliocentric polylines and an optional target marker (see preview.js). */
+    setPreview(p) { preview.set(p); },
+    showTip,
+    eclipticPointAt,
+    /** Re-run hover handling for the last pointer position (e.g. when targeting starts). */
+    rehover() { if (lastMove) container.dispatchEvent(new PointerEvent('pointermove', lastMove)); },
     isVisibleAt(id) { const it = lastItems.find((i) => i.id === id); return !!it?.visible; },
+    beltCount: () => belt.count(),
     get camera() { return camera; },
+    get controls() { return controls; },
     get items() { return lastItems; },
     existsAt,
-    _debug: { custom, bodies, scene },
+    _debug: { custom, bodies, scene, belt, controls },
     hasBody,
   };
+}
+
+function escHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }

@@ -1,7 +1,7 @@
 // Custom objects: fixed-screen-size markers, labels with type glyphs, orbit ellipses and route paths. §6.
 import * as THREE from 'three';
 import { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
-import { existsAt, positionOf, customPath, orbitMotionElements, referencedIds, routePhase, isFlybyStop, legData, legNbody, TYPE_GLYPHS } from '../sim/custom.js';
+import { existsAt, positionOf, customPath, orbitMotionElements, referencedIds, routeAnchor, isFlybyStop, legSpec, pathSignature, TYPE_GLYPHS } from '../sim/custom.js';
 import { sampleOrbit } from '../sim/ephemeris.js';
 import { makeDynamicLine, setLinePoints, ringTexture } from './util.js';
 import { esc } from '../ui/format.js';
@@ -76,16 +76,26 @@ export function createCustomObjects(scene, opts = {}) {
       e.pathMats = [
         new THREE.LineBasicMaterial({ color: o.color, transparent: true, opacity: 0.45, depthWrite: false }),
         new THREE.LineBasicMaterial({ color: o.color, transparent: true, opacity: 0.85, depthWrite: false }),
+        // engines off (drift): dimmer and dashed
+        new THREE.LineDashedMaterial({ color: o.color, transparent: true, opacity: 0.28, depthWrite: false, dashSize: 1, gapSize: 1 }),
+        new THREE.LineDashedMaterial({ color: o.color, transparent: true, opacity: 0.55, depthWrite: false, dashSize: 1, gapSize: 1 }),
       ];
     } else {
       e.pathMats.forEach((m) => m.color.set(o.color));
     }
     const legs = customPath(o, ctx, PATH_SAMPLES);
+    let driftLen = 0;
     for (const leg of legs) {
       const geom = new THREE.BufferGeometry();
       geom.setAttribute('position', new THREE.Float32BufferAttribute(leg.points.flat(), 3));
-      const past = new THREE.Line(geom, e.pathMats[0]);
-      const future = new THREE.Line(geom, e.pathMats[1]);
+      const drift = leg.style === 'drift';
+      const past = new THREE.Line(geom, e.pathMats[drift ? 2 : 0]);
+      const future = new THREE.Line(geom, e.pathMats[drift ? 3 : 1]);
+      if (drift) {
+        past.computeLineDistances();
+        const dist = geom.getAttribute('lineDistance');
+        if (dist) driftLen = Math.max(driftLen, dist.array[dist.count - 1]);
+      }
       past.frustumCulled = future.frustumCulled = false;
       lineGroup.add(past, future);
       const p = { geom, past, future, t0: leg.t0, t1: leg.t1, jds: leg.jds, origin: leg.origin, n: leg.points.length, pastRange: [0, 0], futureRange: [0, leg.points.length] };
@@ -93,13 +103,16 @@ export function createCustomObjects(scene, opts = {}) {
       future.onBeforeRender = () => geom.setDrawRange(p.futureRange[0], p.futureRange[1]);
       e.paths.push(p);
     }
-    // the N-body state of each leg: when it changes (result arrived), the path is rebuilt
-    e.pathSig = legs.map((l) => l.nbody ?? '-').join(',');
+    // dashes (per material) sized for the longest drift path of this object: ~160 dashes along it
+    if (driftLen > 0) for (const k of [2, 3]) { e.pathMats[k].dashSize = driftLen / 160; e.pathMats[k].gapSize = driftLen / 200; }
+    // the async state of each leg (N-body, gravity-refined thrust, drift): when it changes, the path is rebuilt
+    e.pathSig = pathSignature(o, ctx);
     // flyby stops: a small ring at the stop's position at the flyby time (end of the inbound leg)
     const m = o.motion;
-    if (m.profile === 'ballistic') {
+    {
       for (const leg of legs) {
-        if (!isFlybyStop(m.stops, leg.leg + 1)) continue;
+        if (leg.leg === 'drift' || !isFlybyStop(m.stops, leg.leg + 1)) continue;
+        if (legSpec(m, leg.leg).profile !== 'ballistic' || legSpec(m, leg.leg + 1).profile !== 'ballistic') continue;
         const last = leg.points[leg.points.length - 1];
         const pos = [leg.origin[0] + last[0], leg.origin[1] + last[1], leg.origin[2] + last[2]];
         const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: ringTexture(o.color, 14), depthTest: false, depthWrite: false, transparent: true, sizeAttenuation: false }));
@@ -109,21 +122,6 @@ export function createCustomObjects(scene, opts = {}) {
         e.rings.push({ sprite, pos });
       }
     }
-  }
-
-  /** Path signature (N-body status per leg, as in customPath) without rebuilding, to detect newly arrived results. */
-  function currentPathSig(e, ctx) {
-    const m = e.obj.motion;
-    if (m?.kind !== 'route' || !m.stops || m.stops.length < 2) return '';
-    const parts = [];
-    for (let i = 0; i < m.stops.length - 1; i++) {
-      const A = m.stops[i], B = m.stops[i + 1];
-      if (A.departJd == null || B.arriveJd == null || !(B.arriveJd > A.departJd)) continue;
-      const leg = legData(e.obj, i, ctx, 0);
-      const nb = leg.profile === 'ballistic' && leg.ballistic ? legNbody(leg) : null;
-      parts.push(leg.nbodyKey ? (nb ? (nb.ok ? 'ok' : 'failed') : 'pending') : '-');
-    }
-    return parts.join(',');
   }
 
   function buildEntry(o, ctx) {
@@ -176,7 +174,7 @@ export function createCustomObjects(scene, opts = {}) {
   function refreshPaths(ctx) {
     for (const e of entries.values()) {
       if (e.obj.motion?.kind !== 'route') continue;
-      if (currentPathSig(e, ctx) !== e.pathSig) buildPaths(e, ctx);
+      if (pathSignature(e.obj, ctx) !== e.pathSig) buildPaths(e, ctx);
     }
   }
 
@@ -209,10 +207,7 @@ export function createCustomObjects(scene, opts = {}) {
       // co-located (or parked on a route): offset above the body in screen space so labels do not collide
       let anchor = null;
       if (m.kind === 'colocated') anchor = m.parent;
-      else if (m.kind === 'route') {
-        const ph = routePhase(m, jd);
-        if (ph.kind !== 'transit' && ph.stop != null) anchor = m.stops[ph.stop]?.ref ?? null;
-      }
+      else if (m.kind === 'route') anchor = routeAnchor(o, jd, ctx);
       if (anchor && fc.screen.has(anchor)) {
         const p = fc.screen.get(anchor);
         const idx = stackCount.get(anchor) ?? 0;

@@ -5,8 +5,8 @@ import { AU_KM, auDayToKmS } from '../astro/constants.js';
 import { formatJd } from '../astro/time.js';
 import { getBody } from '../sim/ephemeris.js';
 import { nameOf } from '../sim/custom.js';
-import { ballisticSummary, auditSummary, routeFlybys, routeDeltaV } from '../sim/legPhysics.js';
-import { fmtSpeedKmS, fmtKmS, fmtG, fmtMkm, fmtAu, fmtNum, fmtDeg, esc } from './format.js';
+import { ballisticSummary, auditSummary, routeFlybys, routeDeltaV, thrustSummary } from '../sim/legPhysics.js';
+import { fmtSpeedKmS, fmtKmS, fmtG, fmtMkm, fmtAu, fmtNum, fmtDeg, fmtDuration, esc } from './format.js';
 
 const kms = (auDay) => fmtSpeedKmS(auDayToKmS(auDay));
 const row = (k, v) => `<dt>${k}</dt><dd>${v}</dd>`;
@@ -27,11 +27,39 @@ export function fmtAlt(km) {
 
 function frameName(stop, burn, ctx) {
   if (burn.g?.bodyId) return nameOf(burn.g.bodyId, ctx);
+  if (stop?.kind === 'waypoint') return 'the course before the burn';
   return stop?.ref ? nameOf(stop.ref, ctx) : 'fixed point';
+}
+
+/**
+ * Constant-thrust (torch) leg rows: mode, acceleration, arrival, flip, peak speed, Δv, closing speed (intercept), and
+ * the gravity-refinement status. @returns {{rows:string, notes:string, summary:Object}|null}
+ */
+export function thrustHtml(leg) {
+  const t = thrustSummary(leg);
+  if (!t) return null;
+  if (t.failed) return { rows: '', notes: '<div class="msg warn">⚠ No constant-thrust solution for this leg; drawn as a straight line.</div>', summary: t };
+  let rows = '';
+  rows += row('Profile', t.mode === 'intercept'
+    ? 'Torch intercept <span class="muted">(burn toward the target all the way; arrives at speed)</span>'
+    : 'Torch rendezvous <span class="muted">(burn, flip, brake; arrives matching the target’s velocity)</span>');
+  rows += row('Acceleration', fmtG(t.accelG));
+  rows += row('Arrival', `${formatJd(t.arriveJd)} <span class="muted">(${fmtDuration(t.T)} after departure)</span>`);
+  if (t.flipJd != null) rows += row('Flip', formatJd(t.flipJd));
+  rows += row('Peak speed', fmtKmS(t.peakSpeed));
+  rows += row('delta-v (Δv)', `${fmtKmS(t.deltaV)}${leg.cut ? ` <span class="muted">burned before the course change (planned ${fmtKmS(t.plannedDeltaV)})</span>` : ''}`);
+  if (t.closingSpeed != null) rows += row('Closing speed at arrival', `<b>${fmtKmS(t.closingSpeed)}</b>`);
+  let notes = '';
+  if (t.status === 'pending') notes = '<div class="muted small">Refining under the gravity of the Sun and the 8 planets… (gravity-free solution shown)</div>';
+  else if (t.status === 'refined') notes = '<div class="muted small">Steering solved under the gravity of the Sun and the 8 planets (constant thrust, one flip).</div>';
+  else notes = '<div class="msg warn">⚠ Gravity refinement did not converge; the gravity-free solution is shown (fine above ~0.01 g).</div>';
+  return { rows, notes, summary: t };
 }
 
 function burnText(burn, departing) {
   if (burn.kind === 'flyby') return '<span class="muted">none — flyby (see below)</span>';
+  if (burn.kind === 'intercept') return '<span class="muted">none — intercept (the ship flies through)</span>';
+  if (burn.kind === 'cut') return '<span class="muted">none — leg cut short by a course change</span>';
   if (burn.kind === 'direct') return `${kms(burn.dv)} <span class="muted">${departing ? 'velocity change at departure' : 'velocity match on arrival'} (no parking orbit)</span>`;
   const g = burn.g;
   const orbit = g.source === 'object' ? `${fmtAlt(g.parkAltKm)} orbit (the stop's own orbit)` : `${fmtAlt(g.parkAltKm)} parking orbit`;
@@ -47,11 +75,11 @@ export function ballisticHtml(leg, ctx) {
   if (!s) return null;
   const twoBody = s.status !== 'nbody' ? ' <span class="muted">(two-body)</span>' : '';
   let rows = '';
-  rows += row('Departure v∞', `${kms(s.vinfDep)}${twoBody} <span class="muted">rel. ${esc(frameName(leg.fromStop, s.dep, ctx))}</span>`);
-  rows += row('Arrival v∞', `${kms(s.vinfArr)}${twoBody} <span class="muted">rel. ${esc(frameName(leg.toStop, s.arr, ctx))}</span>`);
+  rows += row('Departure excess speed (v∞)', `${kms(s.vinfDep)}${twoBody} <span class="muted">rel. ${esc(frameName(leg.fromStop, s.dep, ctx))}</span>`);
+  rows += row(leg.mode === 'intercept' ? 'Closing speed at arrival' : 'Arrival excess speed (v∞)', `${kms(s.vinfArr)}${twoBody} <span class="muted">rel. ${esc(frameName(leg.toStop, s.arr, ctx))}</span>`);
   rows += row('Departure burn', burnText(s.dep, true));
-  rows += row(s.arr.kind === 'direct' ? 'Arrival burn' : 'Capture burn', burnText(s.arr, false));
-  rows += row('Total Δv (leg)', `<b>${kms(s.totalDv)}</b>`);
+  rows += row(s.arr.kind === 'park' ? 'Capture burn' : 'Arrival burn', burnText(s.arr, false));
+  rows += row('Total delta-v (Δv), leg', `<b>${kms(s.totalDv)}</b>`);
   const bl = leg.ballistic;
   rows += row('Transfer orbit', `a ${fmtAu(bl.a)} · e ${bl.e.toFixed(4)} · q ${fmtAu(bl.rp)} <span class="muted">(two-body)</span>`);
   if (s.closest.length) {
@@ -73,7 +101,7 @@ export function auditHtml(leg) {
   if (a.status === 'error') return { rows: '', notes: `<div class="msg warn">Gravity audit failed: ${esc(a.error)}</div>`, summary: a };
   let rows = '';
   rows += row('Peak engine accel.', `${fmtG(a.peakG)} <span class="muted">incl. gravity (profile ${fmtG(a.profileG)})</span>`);
-  rows += row('Δv incl. gravity', fmtKmS(a.dvEngine));
+  rows += row('delta-v (Δv) incl. gravity', fmtKmS(a.dvEngine));
   rows += row('Gravity loss', fmtPct(a.lossPct));
   return { rows, notes: auditStatusHtml(a), summary: a };
 }
@@ -118,5 +146,5 @@ export function flybysHtml(obj, ctx) {
 export function routeDeltaVHtml(obj, ctx) {
   const t = routeDeltaV(obj, ctx);
   if (!t) return '';
-  return `<dl class="kv">${row('Route total Δv', `<b>${kms(t.total)}</b> <span class="muted">burns ${kms(t.legs)}${t.flybys > 0 ? ` + powered flybys ${kms(t.flybys)}` : ''}${t.pending ? ' · refining…' : ''}</span>`)}</dl>`;
+  return `<dl class="kv">${row('Route total delta-v (Δv)', `<b>${kms(t.total)}</b> <span class="muted">burns ${kms(t.legs)}${t.flybys > 0 ? ` + powered flybys ${kms(t.flybys)}` : ''}${t.pending ? ' · refining…' : ''}</span>`)}</dl>`;
 }

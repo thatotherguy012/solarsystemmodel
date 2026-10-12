@@ -42,7 +42,7 @@ export function initSidebar(app) {
     return `
       <div class="row-wrap" data-wrap="${b.id}">
         <div class="row depth-${depth}" data-id="${b.id}" role="button" tabindex="0" title="${esc(b.designation || b.name)}">
-          ${hasMoons ? `<button class="twisty" data-twisty="${b.id}" aria-label="Toggle moons" aria-expanded="${exp}">${exp ? '▾' : '▸'}</button>` : '<span class="twisty-pad"></span>'}
+          ${hasMoons ? `<button class="twisty" data-twisty="${b.id}" title="Show / hide its moons in the list" aria-label="Toggle moons" aria-expanded="${exp}">${exp ? '▾' : '▸'}</button>` : '<span class="twisty-pad"></span>'}
           <span class="dot" style="background:${b.color}"></span>
           <span class="row-name">${esc(b.name)}</span>${extra}
           ${hasMoons ? `<span class="row-count">${moons.length}</span>` : ''}
@@ -133,7 +133,7 @@ export function initSidebar(app) {
               <span class="caret">${collapsed ? '▸' : '▾'}</span>${g.title}<span class="group-count">${count}</span>
             </button>
             <span class="group-tools">
-              ${g.key === 'custom' ? '<button class="btn tiny" data-new>＋ new</button>' : ''}
+              ${g.key === 'custom' ? '<button class="btn tiny" data-new title="Add a ship, station, base…">＋ new</button>' : ''}
               <button class="group-eye" data-showall="${g.key}" title="Show all (${esc(g.title)})" aria-label="Show all ${esc(g.title)}">${EYE}</button><button class="group-eye" data-hideall="${g.key}" title="Hide all (${esc(g.title)})" aria-label="Hide all ${esc(g.title)}">${EYE_OFF}</button>
             </span>
           </div>
@@ -149,9 +149,10 @@ export function initSidebar(app) {
   }
 
   function highlight() {
-    const { selection, focus } = store.get();
+    const { selection, focus, multiSelection } = store.get();
     for (const [id, r] of rows) {
       r.classList.toggle('selected', id === selection);
+      r.classList.toggle('multi', multiSelection.includes(id));
       r.classList.toggle('focused', id === focus);
     }
   }
@@ -236,7 +237,7 @@ export function initSidebar(app) {
       return;
     }
     const row = t.closest('.row[data-id]');
-    if (row) app.pick(row.dataset.id);
+    if (row) app.pick(row.dataset.id, ev);
   });
   host.addEventListener('keydown', (ev) => {
     const row = ev.target.closest('.row[data-id]');
@@ -250,7 +251,7 @@ export function initSidebar(app) {
   store.subscribe((s, changed) => {
     if (changed.includes('objects') && listSig(s.objects) !== lastSig) render();
     else {
-      if (changed.includes('selection') || changed.includes('focus')) {
+      if (changed.includes('selection') || changed.includes('focus') || changed.includes('multiSelection')) {
         const b = s.selection && getBody(s.selection);
         if (changed.includes('selection') && b?.type === 'moon' && !ui.expanded[b.parent]) {
           ui.expanded[b.parent] = true;

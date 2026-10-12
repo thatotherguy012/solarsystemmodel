@@ -1,20 +1,29 @@
-// Right sidebar: inspector for the selection with Overview · Distances · Orbit tabs. §8.
+// Right sidebar: inspector for the selection. A plain-language status line on top; Simple mode then shows the key
+// facts (distances, signal delay, speed, trip) with the technical tabs (Overview · Distances · Orbit) behind a
+// "Details" expander; Full mode shows the tabs directly. Ships with a drive mirror the command bar's buttons. §8, v3.
 import { AU_KM, LIGHT_S_PER_AU, GM_SUN, auDay2ToMS2, G0_M_S2 } from '../astro/constants.js';
 import { vsub, vlen } from '../astro/vec3.js';
 import { stateToElements } from '../astro/kepler.js';
 import { formatJd } from '../astro/time.js';
 import { store, patchObject, deleteObject } from '../sim/store.js';
 import { getBody, getState, getMu, isMuEstimated, moonsOf, allBodies } from '../sim/ephemeris.js';
-import { customState, existsAt, nameOf, motionSummary, positionOf, velocityOf, muOf, routePhase, legData, isFlybyStop, TYPE_GLYPHS } from '../sim/custom.js';
+import {
+  customState, existsAt, nameOf, nameOfStop, motionSummary, positionOf, velocityOf, muOf, routePhase, legData, isFlybyStop,
+  isWaypoint, driveOf, driftResult, TYPE_GLYPHS,
+} from '../sim/custom.js';
 import { onTrajectoryUpdate } from '../sim/trajectory.js';
+import { ballisticSummary } from '../sim/legPhysics.js';
 import { TYPE_LABELS } from '../data/catalog.js';
 import { fmtAu, fmtKm, fmtMkm, fmtDist, fmtKmS, fmtSpeedKmS, fmtLightTime, fmtG, fmtDeg, fmtDuration, fmtNum, esc } from './format.js';
-import { ballisticHtml, auditHtml, flybysHtml, routeDeltaVHtml } from './legInfo.js';
+import { ballisticHtml, auditHtml, flybysHtml, routeDeltaVHtml, thrustHtml } from './legInfo.js';
+import { statusOf, tripFacts, whenText } from './status.js';
+import { commandableIds } from './commandBar.js';
 import { confirmModal } from './modal.js';
 
 const TABS = [['overview', 'Overview'], ['distances', 'Distances'], ['orbit', 'Orbit']];
 /** Throttle for live refreshes (fast enough to follow timeline scrubbing). */
 const REFRESH_MS = 100;
+const DETAILS_KEY = 'ssm.ui.detailsOpen';
 
 /** State (r, v) of any id at jd. */
 function stateOf(id, jd, ctx) {
@@ -39,9 +48,13 @@ export function initInspector(app) {
   const host = document.getElementById('inspector-body');
   let tab = 'overview';
   try { tab = localStorage.getItem('ssm.ui.inspectorTab') || 'overview'; } catch { /* ignore */ }
+  let detailsOpen = false;
+  try { detailsOpen = localStorage.getItem(DETAILS_KEY) === '1'; } catch { /* ignore */ }
   let sortKey = 'dist', sortDir = 1;
   let builtFor = undefined;
   let lastRefresh = 0, pending = null;
+
+  const simple = () => store.get().detail !== 'full';
 
   function shell(s) {
     const id = s.selection;
@@ -49,7 +62,8 @@ export function initInspector(app) {
       host.innerHTML = `
         <div class="insp-empty">
           <p>Click a body or object (in the view or the list) to inspect it.</p>
-          <p class="muted">Drag to rotate · wheel to zoom · click to select and centre.</p>
+          <p class="muted">Drag to rotate · right-drag to pan · wheel to zoom · Esc or a click on empty space clears the selection.</p>
+          <p class="muted">Select a ship and press <kbd>G</kbd> to send it somewhere, <kbd>T</kbd> to intercept something.</p>
         </div>`;
       return;
     }
@@ -59,24 +73,53 @@ export function initInspector(app) {
     const color = b ? b.color : o.color;
     const name = b ? b.name : o.name;
     const sub = b ? (TYPE_LABELS[b.type] ?? b.type) : `${o.type[0].toUpperCase()}${o.type.slice(1)} · custom object`;
+    const drive = o ? driveOf(o) : null;
+    const extra = s.multiSelection.filter((x) => x !== id).length;
     host.innerHTML = `
       <div class="insp-head">
         <span class="dot big" style="background:${esc(color)}"></span>
         <div class="insp-title">
           <div class="insp-name">${o ? `<span class="glyph" style="color:${esc(color)}">${TYPE_GLYPHS[o.type] ?? ''}</span> ` : ''}${esc(name)}</div>
-          <div class="insp-sub">${esc(sub)}</div>
+          <div class="insp-sub">${esc(sub)}${drive ? ` · ${drive.kind === 'torch' ? `torch drive ${fmtG(drive.accelG)}` : 'coast drive'}` : ''}</div>
         </div>
       </div>
+      <p class="status-line" data-f="status"></p>
+      ${extra ? `<p class="multi-note">+ ${extra} more selected (shift-click) — commands apply to all</p>` : ''}
+      ${drive ? `<div class="insp-actions cmd-row" role="toolbar" aria-label="Ship commands">
+        <button class="btn small" data-cmd="goto" title="Send to a destination and match its speed (G)">Go to</button>
+        <button class="btn small" data-cmd="intercept" title="Reach a target as fast as possible without matching its speed (T)">Intercept</button>
+        <button class="btn small" data-cmd="cut" title="Stop thrusting now: the ship coasts on its current velocity">Cut engines</button>
+        <button class="btn small" data-cmd="drive" title="Change the drive">Drive ✎</button>
+        <button class="btn small" data-cmd="course" title="Detailed course: arrival date, ballistic duration, intercept or rendezvous">Set course…</button>
+      </div>` : ''}
       <div class="insp-badges" data-f="badges"></div>
       <div class="insp-actions">
-        <button class="btn small" data-act="focus" title="Centre the camera on this object">Focus</button>
+        <button class="btn small" data-act="focus" title="Make the camera follow this object">Follow</button>
         <button class="btn small" data-act="measure" title="Measure from this object to the next one you click">Measure to…</button>
         <button class="btn small" data-act="plan" title="Open the travel planner from here">Plan trip</button>
-        ${o ? '<button class="btn small" data-act="edit">Edit</button>' : ''}
+        ${o ? '<button class="btn small" data-act="edit" title="Edit name, type, drive, motion and route">Edit</button>' : ''}
       </div>
-      <div class="tabs" role="tablist">${TABS.map(([k, l]) => `<button role="tab" class="tab" data-tab="${k}" aria-selected="${k === tab}">${l}</button>`).join('')}</div>
-      <div class="tab-body" data-f="body"></div>`;
+      ${simple() ? `<div class="simple-card" data-f="simple"></div>
+        ${o ? '<div class="section-title">Notes</div><textarea class="notes" data-notes rows="4" placeholder="Notes (saved automatically)"></textarea>' : ''}
+        <details class="insp-details" data-f="details" ${detailsOpen ? 'open' : ''}><summary>Details</summary>
+          <div class="tabs" role="tablist">${TABS.map(([k, l]) => `<button role="tab" class="tab" data-tab="${k}" aria-selected="${k === tab}">${l}</button>`).join('')}</div>
+          <div class="tab-body" data-f="body"></div>
+        </details>`
+      : `<div class="tabs" role="tablist">${TABS.map(([k, l]) => `<button role="tab" class="tab" data-tab="${k}" aria-selected="${k === tab}">${l}</button>`).join('')}</div>
+        <div class="tab-body" data-f="body"></div>`}`;
+    if (simple() && o) bindNotes(host.querySelector('textarea[data-notes]'), o);
+    host.querySelector('details[data-f=details]')?.addEventListener('toggle', (ev) => {
+      detailsOpen = ev.target.open;
+      try { localStorage.setItem(DETAILS_KEY, detailsOpen ? '1' : '0'); } catch { /* ignore */ }
+      if (detailsOpen) refresh(true);
+    });
     renderTab(s);
+  }
+
+  function bindNotes(ta, o) {
+    if (!ta) return;
+    ta.value = o.notes || '';
+    ta.addEventListener('input', () => patchObject(o.id, { notes: ta.value }));
   }
 
   function renderTab(s) {
@@ -88,11 +131,7 @@ export function initInspector(app) {
     if (tab === 'overview') body.innerHTML = overviewSkeleton(id, o, s);
     else if (tab === 'distances') body.innerHTML = '<div data-f="dist"></div>';
     else body.innerHTML = '<div data-f="orbit"></div>';
-    if (tab === 'overview' && o) {
-      const ta = body.querySelector('textarea[data-notes]');
-      ta.value = o.notes || '';
-      ta.addEventListener('input', () => patchObject(o.id, { notes: ta.value }));
-    }
+    if (tab === 'overview' && o && !simple()) bindNotes(body.querySelector('textarea[data-notes]'), o);
     refresh(true);
   }
 
@@ -114,6 +153,8 @@ export function initInspector(app) {
       if (b.epochJd) staticRows += row('Elements epoch', `${formatJd(b.epochJd, { time: false })} <span class="muted">(${b.type === 'moon' ? 'Horizons' : 'SBDB'})</span>`);
     } else {
       staticRows += row('Motion', esc(motionSummary(o, s.ctx)));
+      const d = driveOf(o);
+      if (d) staticRows += row('Drive', d.kind === 'torch' ? `torch, ${fmtG(d.accelG)} <span class="muted">(${(d.accelG * G0_M_S2).toFixed(2)} m/s²)</span>` : 'coast (ballistic transfers, impulsive burns)');
       if (o.tags?.length) staticRows += row('Tags', o.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join(' '));
       if (o.existsFromJd != null || o.existsUntilJd != null) {
         staticRows += row('Exists', `${o.existsFromJd != null ? formatJd(o.existsFromJd) : '—'} → ${o.existsUntilJd != null ? formatJd(o.existsUntilJd) : '—'}`);
@@ -124,8 +165,8 @@ export function initInspector(app) {
       ${o?.motion?.kind === 'route' ? '<div class="section-title">Route</div><div data-f="route"></div>' : ''}
       <div class="section-title">State at <span data-f="when"></span></div>
       <dl class="kv" data-f="state"></dl>
-      ${o ? `<div class="section-title">Notes</div><textarea class="notes" data-notes rows="5" placeholder="Notes (saved automatically)"></textarea>
-             <div class="insp-actions end"><button class="btn small danger" data-act="delete">Delete object</button></div>` : ''}`;
+      ${o && !simple() ? `<div class="section-title">Notes</div><textarea class="notes" data-notes rows="5" placeholder="Notes (saved automatically)"></textarea>` : ''}
+      ${o ? '<div class="insp-actions end"><button class="btn small danger" data-act="delete" title="Delete this object (cannot be undone)">Delete object</button></div>' : ''}`;
   }
 
   function row(k, v, cls = '') {
@@ -147,9 +188,91 @@ export function initInspector(app) {
     const o = getBody(id) ? null : s.ctx.byId.get(id);
     if (!getBody(id) && !o) return;
     renderBadges(s, id, o);
+    renderStatus(s, id);
+    if (simple()) refreshSimple(s, id, o);
+    const details = host.querySelector('details[data-f=details]');
+    if (details && !details.open) return;
     if (tab === 'overview') refreshOverview(s, id, o);
     else if (tab === 'distances') refreshDistances(s, id);
     else refreshOrbit(s, id, o);
+  }
+
+  function renderStatus(s, id) {
+    const el = host.querySelector('[data-f=status]');
+    if (!el) return;
+    const st = statusOf(id, s.jd, s.ctx);
+    const html = `<span class="status-dot status-${st.kind}"></span>${esc(st.text)}`;
+    if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
+  }
+
+  function setHtml(el, html) {
+    if (el && el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
+  }
+
+  function refreshSimple(s, id, o) {
+    const el = host.querySelector('[data-f=simple]');
+    if (!el) return;
+    const st = stateOf(id, s.jd, s.ctx);
+    if (!st) return;
+    const r = st.r;
+    const dSun = vlen(r);
+    const two = (au) => `${fmtAu(au)} · ${fmtMkm(au * AU_KM)}`;
+    let html = '<dl class="kv simple">';
+    if (id !== 'sun') html += row('From the Sun', two(dSun));
+    const b = getBody(id);
+    if (id !== 'earth') {
+      const dE = vlen(vsub(r, getState('earth', s.jd).r));
+      if (dE * AU_KM < 2 * 6371) html += row('From Earth', 'at Earth <span class="muted">(no signal delay)</span>');
+      else {
+        html += row('From Earth', dE < 0.01 ? fmtKm(dE * AU_KM) : two(dE));
+        html += row('Signal delay to Earth', `${fmtLightTime(dE * LIGHT_S_PER_AU)} <span class="muted">one way · ${fmtLightTime(2 * dE * LIGHT_S_PER_AU)} reply</span>`);
+      }
+    }
+    const m = s.measure;
+    if (m?.a && m?.b && (m.a === id || m.b === id)) {
+      const other = m.a === id ? m.b : m.a;
+      const p = positionOf(other, s.jd, s.ctx);
+      if (p) {
+        const d = vlen(vsub(p, r));
+        html += row(`Signal delay to ${esc(nameOf(other, s.ctx))}`, `${fmtLightTime(d * LIGHT_S_PER_AU)} <span class="muted">(${d < 0.01 ? fmtKm(d * AU_KM) : two(d)})</span>`);
+      }
+    }
+    html += row('Speed', `${fmtKmS(vlen(st.v))} <span class="muted">relative to the Sun</span>`);
+    const parent = parentOf(id, s.ctx);
+    if (parent && parent !== 'sun') {
+      const ps = stateOf(parent, s.jd, s.ctx);
+      const pb = getBody(parent);
+      if (ps) {
+        const d = vlen(vsub(r, ps.r)) * AU_KM;
+        html += row(`Above ${esc(nameOf(parent, s.ctx))}`, pb ? `${fmtKm(Math.max(0, d - pb.radiusKm))} <span class="muted">altitude</span>` : fmtKm(d));
+      }
+    }
+    if (b) html += row('Size', `${fmtKm(b.radiusKm)} radius`);
+    html += '</dl>';
+    if (o) {
+      const t = tripFacts(o, s.jd, s.ctx);
+      if (t) {
+        html += `<div class="section-title">${t.departJd > s.jd ? 'Next trip' : 'This trip'}</div><dl class="kv simple">`;
+        html += row('Destination', esc(t.to) + (t.mode === 'intercept' ? ' <span class="muted">(intercept)</span>' : ''));
+        if (t.departJd > s.jd) html += row('Departs', `${whenText(t.departJd, s.jd)} <span class="muted">(in ${fmtDuration(t.departJd - s.jd)})</span>`);
+        html += row('ETA', `${whenText(t.arriveJd, s.jd)} <span class="muted">(${t.arriveJd >= s.jd ? `in ${fmtDuration(t.arriveJd - s.jd)}` : 'arrived'})</span>`);
+        if (t.peak != null) html += row('Peak speed', fmtKmS(t.peak));
+        if (t.dv != null) html += row('delta-v (Δv)', fmtKmS(t.dv));
+        if (t.closing != null) html += row('Closing speed', fmtKmS(t.closing));
+        if (t.profile === 'ballistic') {
+          const ph = routePhase(o.motion, s.jd);
+          const i = ph.kind === 'transit' ? ph.leg : ph.stop;
+          const sm = ballisticSummary(legData(o, i, s.ctx), s.ctx);
+          if (sm) {
+            html += row('Departure burn', fmtKmS(sm.dep.dv));
+            if (sm.arr.kind === 'park' || sm.arr.kind === 'direct') html += row('Arrival burn', fmtKmS(sm.arr.dv));
+            html += row('delta-v (Δv)', `${fmtKmS(sm.totalDv)}${sm.status === 'pending' ? ' <span class="muted">(refining…)</span>' : ''}`);
+          }
+        }
+        html += '</dl>';
+      }
+    }
+    setHtml(el, html);
   }
 
   function renderBadges(s, id, o) {
@@ -158,15 +281,10 @@ export function initInspector(app) {
     const badges = [];
     if (o) {
       if (!existsAt(o, s.jd)) badges.push(['warn', o.existsFromJd != null && s.jd < o.existsFromJd ? 'Not yet exists' : 'No longer exists']);
-      if (o.motion?.kind === 'route') {
-        const ph = routePhase(o.motion, s.jd);
-        const label = { before: 'Awaiting departure', parked: 'Parked', transit: 'In transit', arrived: 'Arrived', invalid: 'Invalid route' }[ph.kind];
-        badges.push([ph.kind === 'transit' ? 'accent' : 'plain', label]);
-      }
       const err = s.ctx.errors.get(o.id);
       if (err) badges.push(['err', `⚠ ${err}`]);
     }
-    if (s.focus === id) badges.push(['plain', 'Camera focus']);
+    if (s.focus === id) badges.push(['plain', 'Camera follows']);
     if (s.measure && (s.measure.a === id || s.measure.b === id)) badges.push(['measure', 'Measured']);
     const html = badges.map(([k, t]) => `<span class="badge badge-${k}">${esc(t)}</span>`).join('');
     if (el.innerHTML !== html) el.innerHTML = html;
@@ -184,7 +302,7 @@ export function initInspector(app) {
     html += row('Position x', `${r[0].toFixed(6)} AU`, 'mono');
     html += row('Position y', `${r[1].toFixed(6)} AU`, 'mono');
     html += row('Position z', `${r[2].toFixed(6)} AU`, 'mono');
-    html += row('From Sun', `${fmtAu(dSun)} · ${fmtMkm(dSun * AU_KM)}<br><span class="muted">light ${fmtLightTime(dSun * LIGHT_S_PER_AU)}</span>`);
+    html += row('From Sun', `${fmtAu(dSun)} · ${fmtMkm(dSun * AU_KM)}<br><span class="muted">signal delay ${fmtLightTime(dSun * LIGHT_S_PER_AU)}</span>`);
     html += row('Speed', `${fmtKmS(vlen(v))} <span class="muted">heliocentric</span>`);
     const parent = parentOf(id, s.ctx);
     if (parent && parent !== 'sun') {
@@ -200,31 +318,35 @@ export function initInspector(app) {
     if (id !== 'earth' && parent !== 'earth') {
       const e = getState('earth', s.jd).r;
       const d = vlen(vsub(r, e));
-      html += row('From Earth', `${fmtDist(d)}<br><span class="muted">light ${fmtLightTime(d * LIGHT_S_PER_AU)} one-way</span>`);
+      html += row('From Earth', `${fmtDist(d)}<br><span class="muted">signal delay ${fmtLightTime(d * LIGHT_S_PER_AU)} one-way</span>`);
     }
     if (el.innerHTML !== html) el.innerHTML = html;
     if (o?.motion?.kind === 'route') refreshRoute(s, o);
   }
 
-  function refreshRoute(s, o) {
-    const el = host.querySelector('[data-f=route]');
-    if (!el) return;
-    const st = customState(o, s.jd, s.ctx);
-    const li = st.legInfo;
-    const m = o.motion;
-    let html = '';
-    const legSummary = (leg) => {
-      const from = nameOf(leg.fromId, s.ctx), to = nameOf(leg.toId, s.ctx);
-      let t = `<dl class="kv">`;
-      t += row('Leg', `${esc(from)} → ${esc(to)} <span class="muted">(${leg.profile}${leg.fallback ? ', no ballistic solution — linear' : ''})</span>`);
-      t += row('Departs', formatJd(leg.t0));
-      t += row('Arrives', `${formatJd(leg.t1)} <span class="muted">(${fmtDuration(leg.T)})</span>`);
+  function legSummary(leg, s) {
+    const from = nameOfStop(leg.fromStop, s.ctx), to = nameOfStop(leg.toStop, s.ctx);
+    let t = `<dl class="kv">`;
+    const prof = { thrust: 'torch', drift: 'engines off', ballistic: 'ballistic', brachistochrone: 'brachistochrone', linear: 'linear' }[leg.profile] ?? leg.profile;
+    t += row('Leg', `${esc(from)} → ${esc(to)} <span class="muted">(${prof}${leg.fallback ? ', no solution — straight line' : ''})</span>`);
+    t += row('Departs', formatJd(leg.t0));
+    if (leg.cut) t += row('Course changed', `${formatJd(leg.tEnd)} <span class="muted">(after ${fmtDuration(leg.tEnd - leg.t0)}; planned arrival ${formatJd(leg.t1)})</span>`);
+    let notes = '';
+    if (leg.profile === 'thrust') {
+      const th = thrustHtml(leg);
+      if (th) { t += th.rows; notes = th.notes; }
+      t += row('Distance', `${fmtDist(leg.D)} <span class="muted">(start to meeting point)</span>`);
+    } else if (leg.profile === 'drift') {
+      t += row('Until', `${formatJd(leg.tEnd)} <span class="muted">(${fmtDuration(leg.tEnd - leg.t0)})</span>`);
+      t += row('Speed at engine cut', fmtKmS(vlen(leg.V0)));
+      notes = '<div class="muted small">Coasting in the gravity of the Sun and the 8 planets.</div>';
+    } else {
+      if (!leg.cut) t += row('Arrives', `${formatJd(leg.t1)} <span class="muted">(${fmtDuration(leg.T)})</span>`);
       t += row('Distance', fmtDist(leg.D));
-      let notes = '';
       if (leg.profile === 'brachistochrone') {
         t += row('Acceleration', `${fmtG(auDay2ToMS2(leg.accel) / G0_M_S2)} <span class="muted">(${auDay2ToMS2(leg.accel).toFixed(3)} m/s²)</span>`);
         t += row('Peak velocity', fmtKmS(leg.vPeak));
-        t += row('Δv', `${fmtKmS(leg.dv)} <span class="muted">(gravity-free)</span>`);
+        t += row('delta-v (Δv)', `${fmtKmS(leg.dv)} <span class="muted">(gravity-free)</span>`);
         const au = auditHtml(leg);
         if (au) { t += au.rows; notes = au.notes; }
       } else if (leg.profile === 'ballistic' && leg.ballistic) {
@@ -234,26 +356,39 @@ export function initInspector(app) {
       } else {
         t += row('Average speed', fmtKmS(leg.vAvg));
       }
-      return t + '</dl>' + notes;
-    };
+    }
+    return t + '</dl>' + notes;
+  }
+
+  function refreshRoute(s, o) {
+    const el = host.querySelector('[data-f=route]');
+    if (!el) return;
+    const st = customState(o, s.jd, s.ctx);
+    const li = st.legInfo;
+    const m = o.motion;
+    let html = '';
     if (li?.phase.kind === 'transit') {
       const leg = li.leg;
-      const remaining = leg.t1 - s.jd;
-      html += `<p class="route-now">${esc(nameOf(leg.fromId, s.ctx))} → ${esc(nameOf(leg.toId, s.ctx))}, departed ${formatJd(leg.t0, { time: false })}, arrives ${formatJd(leg.t1, { time: false })} <span class="accent">(in ${fmtDuration(remaining)})</span></p>`;
       html += `<div class="progress"><div style="width:${(Math.min(1, Math.max(0, li.tau)) * 100).toFixed(1)}%"></div></div>`;
-      html += legSummary(leg);
+      html += legSummary(leg, s);
     } else if (li?.next) {
-      const until = li.next.t0 - s.jd;
-      html += `<p class="route-now">${li.phase.kind === 'before' ? 'Awaiting departure' : 'Parked'} at ${esc(nameOf(m.stops[li.phase.stop].ref, s.ctx))}; next departure ${formatJd(li.next.t0)} <span class="accent">(in ${fmtDuration(until)})</span></p>`;
-      html += legSummary(li.next);
+      html += legSummary(li.next, s);
     } else if (li?.phase.kind === 'arrived') {
-      html += `<p class="route-now">Arrived at ${esc(nameOf(m.stops[m.stops.length - 1].ref, s.ctx))} on ${formatJd(m.stops[m.stops.length - 1].arriveJd)}.</p>`;
+      const last = m.stops[m.stops.length - 1];
+      if (li.drift) {
+        const res = driftResult(li.drift);
+        html += `<p class="route-now">Engines off since ${formatJd(li.drift.t)} at ${fmtKmS(vlen(li.drift.v))}.</p>`;
+        if (res?.impacts?.length) html += res.impacts.map((im) => `<span class="badge badge-impact">DRIFT HITS ${esc(nameOf(im.id, s.ctx).toUpperCase())} on ${formatJd(im.jd, { time: false })}</span>`).join(' ');
+        html += '<div class="muted small">Dashed line: the coast for the next three years (Sun + 8 planets N-body).</div>';
+      } else html += `<p class="route-now">Arrived at ${esc(nameOfStop(last, s.ctx))} on ${formatJd(last.arriveJd)}.</p>`;
     }
     // itinerary
     html += '<table class="itin"><thead><tr><th>#</th><th>Stop</th><th>Arrive</th><th>Depart</th></tr></thead><tbody>';
     m.stops.forEach((st2, i) => {
       const fly = isFlybyStop(m.stops, i);
-      html += `<tr><td>${i + 1}</td><td>${esc(st2.ref ? nameOf(st2.ref, s.ctx) : `(${(+st2.x).toFixed(3)}, ${(+st2.y).toFixed(3)}, ${(+st2.z).toFixed(3)}) AU`)}</td>
+      const label = isWaypoint(st2) ? `<span class="muted">course change${st2.aborted ? ` (was bound for ${esc(nameOfStop(st2.aborted, s.ctx))})` : ''}</span>`
+        : st2.ref ? esc(nameOf(st2.ref, s.ctx)) : st2.kind === 'hold' ? esc(nameOfStop(st2, s.ctx)) : `(${(+st2.x).toFixed(3)}, ${(+st2.y).toFixed(3)}, ${(+st2.z).toFixed(3)}) AU`;
+      html += `<tr><td>${i + 1}</td><td>${label}</td>
         <td class="mono">${st2.arriveJd != null ? formatJd(st2.arriveJd) : '—'}</td><td class="mono">${fly ? '<span class="muted">flyby</span>' : st2.departJd != null ? formatJd(st2.departJd) : '—'}</td></tr>`;
     });
     html += '</tbody></table>';
@@ -262,8 +397,8 @@ export function initInspector(app) {
     if (m.stops.length > 2) {
       html += '<details class="legs"><summary>All legs</summary>';
       for (let i = 0; i < m.stops.length - 1; i++) {
-        if (m.stops[i].departJd == null || m.stops[i + 1].arriveJd == null) continue;
-        html += `<div class="leg-block"><div class="muted">Leg ${i + 1}</div>${legSummary(legData(o, i, s.ctx))}</div>`;
+        if (m.stops[i].departJd == null || m.stops[i + 1].arriveJd == null || !(m.stops[i + 1].arriveJd > m.stops[i].departJd)) continue;
+        html += `<div class="leg-block"><div class="muted">Leg ${i + 1}</div>${legSummary(legData(o, i, s.ctx), s)}</div>`;
       }
       html += '</details>';
     }
@@ -300,12 +435,12 @@ export function initInspector(app) {
     const arrow = (k) => (sortKey === k ? (sortDir > 0 ? ' ▲' : ' ▼') : '');
     let html = `
       <div class="insp-actions">
-        <button class="btn small" data-act="measure">Measure to…</button>
-        ${s.measure ? '<button class="btn small" data-act="clear-measure">Clear measurement</button>' : ''}
+        <button class="btn small" data-act="measure" title="Draw a measuring line to the next object you click">Measure to…</button>
+        ${s.measure ? '<button class="btn small" data-act="clear-measure" title="Remove the measuring line">Clear measurement</button>' : ''}
       </div>
-      <p class="muted small">From <b>${esc(nameOf(id, s.ctx))}</b> at ${formatJd(s.jd)}. Light time is straight-line distance / c.</p>
+      <p class="muted small">From <b>${esc(nameOf(id, s.ctx))}</b> at ${formatJd(s.jd)}. Signal delay is straight-line distance / speed of light.</p>
       <table class="dist-table"><thead><tr>
-        <th data-sort="name">Object${arrow('name')}</th><th data-sort="dist" class="num">AU${arrow('dist')}</th><th class="num">M km</th><th class="num">Light</th><th class="num">Round trip</th>
+        <th data-sort="name">Object${arrow('name')}</th><th data-sort="dist" class="num">AU${arrow('dist')}</th><th class="num">M km</th><th class="num" title="One-way signal (light) delay">Signal</th><th class="num" title="Round-trip signal delay">Reply</th>
       </tr></thead><tbody>`;
     const auCell = (d) => (d === 0 ? '0' : d < 0.001 ? d.toPrecision(3) : d.toFixed(d < 10 ? 4 : 2));
     const mkmCell = (km) => (km === 0 ? '0' : km < 1e5 ? (km / 1e6).toPrecision(3) : fmtNum(km / 1e6, km < 1e7 ? 3 : 1));
@@ -350,7 +485,7 @@ export function initInspector(app) {
     const dist = (au) => (Math.abs(au) < 0.01 ? fmtKm(toKm(au)) : `${fmtAu(au)} (${fmtMkm(toKm(au))})`);
     const alt = (au) => (cb && center !== 'sun' ? ` · alt ${fmtKm(toKm(au) - cb.radiusKm)}` : '');
     const hyper = !(el2.e < 1);
-    let html = `<p class="muted small">Osculating elements about <b>${esc(nameOf(center, s.ctx))}</b> at ${formatJd(s.jd)}, ecliptic J2000, μ = ${fmtNum(mu * AU_KM ** 3 / 86400 ** 2, mu * AU_KM ** 3 / 86400 ** 2 >= 100 ? 0 : 4)} km³/s².</p><dl class="kv">`;
+    let html = `<p class="muted small">Osculating elements about <b>${esc(nameOf(center, s.ctx))}</b> at ${formatJd(s.jd)}, ecliptic J2000, μ = ${fmtNum(mu * AU_KM ** 3 / 86400 ** 2, mu * AU_KM ** 3 / 86400 ** 2 >= 100 ? 0 : 4)} km³/s².${o?.motion?.kind === 'route' ? ' For a ship under thrust these are the orbit it would follow if the engines stopped now.' : ''}</p><dl class="kv">`;
     html += row('Semi-major axis a', hyper ? `${dist(el2.a)} <span class="muted">(hyperbolic)</span>` : dist(el2.a));
     html += row('Eccentricity e', el2.e.toFixed(6), 'mono');
     html += row('Inclination i', fmtDeg(el2.i, 4));
@@ -389,6 +524,13 @@ export function initInspector(app) {
     }
     const go = t.closest('[data-goto]');
     if (go) { ev.preventDefault(); app.pick(go.dataset.goto); return; }
+    const cmd = t.closest('[data-cmd]');
+    if (cmd) {
+      // the inspector's command buttons act on the selection like the command bar
+      if (!commandableIds().length) return;
+      app.commands.runCommand(cmd.dataset.cmd, cmd);
+      return;
+    }
     const act = t.closest('[data-act]')?.dataset.act;
     const s = store.get();
     if (!act) return;
@@ -408,7 +550,7 @@ export function initInspector(app) {
 
   store.subscribe((s, changed) => {
     const notesTyping = document.activeElement?.matches?.('#inspector textarea[data-notes]');
-    if (changed.includes('selection') || (changed.includes('objects') && !notesTyping) || builtFor === undefined) {
+    if (changed.includes('selection') || changed.includes('multiSelection') || changed.includes('detail') || (changed.includes('objects') && !notesTyping) || builtFor === undefined) {
       builtFor = s.selection;
       shell(s);
       return;
