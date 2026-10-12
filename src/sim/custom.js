@@ -7,7 +7,9 @@ import { vadd, vsub, vscale, vlen, vdist, vlerp, vcross, vnorm } from '../astro/
 import { elementsToState, stateToElements, meanMotion } from '../astro/kepler.js';
 import { lambert, propagateUniversal, brachistochroneFraction, brachistochroneTime } from '../astro/lambert.js';
 import { lagrangePoint } from '../astro/lagrange.js';
-import { hasBody, getState, getPosition, getMu, getBody } from './ephemeris.js';
+import { interpolateSamples } from '../astro/nbody.js';
+import { hasBody, getState, getPosition, getMu, getBody, perturberIdFor } from './ephemeris.js';
+import { requestTrajectory, peekTrajectory, isTrajectoryPending } from './trajectory.js';
 
 /** Maximum reference depth (object -> object -> ...) before declaring a cycle. */
 export const MAX_DEPTH = 4;
@@ -137,45 +139,107 @@ function stopVelocity(stop, t, ctx, depth) {
   return velocityOf(stop.ref, t, ctx, depth + 1);
 }
 
+/**
+ * Natural body whose frame (and gravity) a stop reference sits in: a natural body itself, or the body a custom
+ * object orbits / is co-located with (followed through chains of custom objects). Null for Lagrange points,
+ * fixed points, route-kind objects and anything else.
+ * @returns {string|null}
+ */
+export function stopFrameBody(ref, ctx, depth = 0) {
+  if (!ref || depth > MAX_DEPTH) return null;
+  if (hasBody(ref)) return ref;
+  const m = ctx.byId.get(ref)?.motion;
+  if (m?.kind === 'orbit' || m?.kind === 'colocated') return stopFrameBody(m.parent, ctx, depth + 1);
+  return null;
+}
+
+/**
+ * Velocity that hyperbolic excess speeds are measured against at a stop: the frame body's heliocentric velocity
+ * (so a station in low orbit reports v∞ relative to its planet, not to its own orbital motion), otherwise the
+ * stop's own velocity (zero for a fixed point).
+ */
+export function stopFrameVelocity(stop, t, ctx, depth = 0) {
+  const b = stopFrameBody(stop.ref, ctx);
+  if (b) return getState(b, t).v;
+  return stopVelocity(stop, t, ctx, depth);
+}
+
+/** True when stop i of a route is a zero-dwell intermediate stop (arrival == departure): a flyby. */
+export function isFlybyStop(stops, i) {
+  const s = stops?.[i];
+  return !!s && i > 0 && i < stops.length - 1 && s.arriveJd != null && s.arriveJd === s.departJd;
+}
+
 // ------------------------------------------------------------------ route legs
 
 /** Leg cache: `${objId}#${legIndex}` -> { key, data } */
 const legCache = new Map();
 
 /**
- * Derived data for leg i of a route (from stop i to stop i+1).
- * @returns {Object} { i, t0, t1, T, P0, P1, D, profile, accel, vPeak, dv, ballistic?, fallback, fromId, toId }
+ * Derived data for leg i of a route (from stop i to stop i+1). Ballistic legs carry the two-body Lambert solution
+ * immediately and queue the N-body refinement (`nbodyKey`, see legNbody); brachistochrone legs queue a gravity
+ * audit (`auditKey`, see legAudit).
+ * @returns {Object} { i, t0, t1, T, P0, P1, D, profile, accel, vPeak, dv, ballistic?, fallback, fromId, toId,
+ *   fromStop, toStop, depFlyby, arrFlyby, endpointIds, nbodyKey?, auditKey? }
  */
 export function legData(obj, i, ctx, depth = 0) {
   const m = obj.motion;
   const A = m.stops[i], B = m.stops[i + 1];
-  const key = `${ctx.version}|${m.profile}|${JSON.stringify(A)}|${JSON.stringify(B)}`;
+  const key = `${ctx.version}|${m.profile}|${m.stops.length}|${JSON.stringify(A)}|${JSON.stringify(B)}`;
   const ck = `${obj.id}#${i}`;
   const c = legCache.get(ck);
   if (c && c.key === key) return c.data;
   const t0 = A.departJd, t1 = B.arriveJd, T = t1 - t0;
   const P0 = stopPosition(A, t0, ctx, depth, obj.id), P1 = stopPosition(B, t1, ctx, depth, obj.id);
   const D = vdist(P0, P1);
+  const look = (id) => ctx.byId.get(id);
+  const endpointIds = [...new Set([perturberIdFor(A.ref, look), perturberIdFor(B.ref, look)].filter(Boolean))];
   const data = {
     i, t0, t1, T, P0, P1, D, profile: m.profile, fromId: A.ref ?? null, toId: B.ref ?? null,
     accel: T > 0 ? (4 * D) / (T * T) : NaN, vPeak: T > 0 ? (2 * D) / T : NaN, dv: T > 0 ? (4 * D) / T : NaN,
     vAvg: T > 0 ? D / T : NaN, fallback: false, ballistic: null,
+    fromStop: A, toStop: B, depFlyby: isFlybyStop(m.stops, i), arrFlyby: isFlybyStop(m.stops, i + 1), endpointIds,
+    nbodyKey: null, nbodyParams: null, auditKey: null, auditParams: null, trajGroup: obj.trajGroup ?? 'route',
   };
   if (m.profile === 'ballistic' && T > 0) {
     const sol = lambert(P0, P1, T, GM_SUN, true);
     if (sol.ok) {
-      const vDep = stopVelocity(A, t0, ctx, depth), vArr = stopVelocity(B, t1, ctx, depth);
+      const vDep = stopFrameVelocity(A, t0, ctx, depth), vArr = stopFrameVelocity(B, t1, ctx, depth);
       const el = stateToElements(P0, sol.v1, GM_SUN, t0);
       data.ballistic = {
-        v1: sol.v1, v2: sol.v2, vinfDep: vlen(vsub(sol.v1, vDep)), vinfArr: vlen(vsub(sol.v2, vArr)),
+        v1: sol.v1, v2: sol.v2, vFrameDep: vDep, vFrameArr: vArr, vinfDep: vlen(vsub(sol.v1, vDep)), vinfArr: vlen(vsub(sol.v2, vArr)),
         a: el.a, e: el.e, rp: el.rp, iDeg: el.i / DEG,
       };
+      data.nbodyParams = { P0, t0, P1, t1, v1: sol.v1, endpointIds };
+      data.nbodyKey = requestTrajectory('ballistic', data.nbodyParams, data.trajGroup).key;
     } else {
       data.fallback = true; // no ballistic solution -> linear
     }
+  } else if (m.profile === 'brachistochrone' && T > 0 && D > 0) {
+    data.auditParams = { P0, P1, t0, T, a: data.accel, endpointIds };
+    data.auditKey = requestTrajectory('audit', data.auditParams, data.trajGroup).key;
   }
   legCache.set(ck, { key, data });
   return data;
+}
+
+/**
+ * N-body result of a ballistic leg ({ ok, v0, vEnd, samples, closest, impacts, correctionAuDay, ... }), or null
+ * while it is being computed. Re-queues the job if the result was evicted from the cache.
+ */
+export function legNbody(leg) {
+  if (!leg?.nbodyKey) return null;
+  const r = peekTrajectory(leg.nbodyKey);
+  if (!r && !isTrajectoryPending(leg.nbodyKey)) requestTrajectory('ballistic', leg.nbodyParams, leg.trajGroup);
+  return r;
+}
+
+/** Gravity-audit result of a brachistochrone leg, or null while it is being computed. */
+export function legAudit(leg) {
+  if (!leg?.auditKey) return null;
+  const r = peekTrajectory(leg.auditKey);
+  if (!r && !isTrajectoryPending(leg.auditKey)) requestTrajectory('audit', leg.auditParams, leg.trajGroup);
+  return r;
 }
 
 /** Position along a leg at time jd (t0 <= jd <= t1). */
@@ -183,6 +247,8 @@ function legPosition(leg, jd) {
   const T = leg.T;
   const tau = T > 0 ? (jd - leg.t0) / T : 1;
   if (leg.profile === 'ballistic' && leg.ballistic) {
+    const nb = legNbody(leg);
+    if (nb?.ok) return interpolateSamples(nb.samples, jd).r;
     return propagateUniversal(leg.P0, leg.ballistic.v1, jd - leg.t0, GM_SUN).r;
   }
   if (leg.profile === 'brachistochrone') return vlerp(leg.P0, leg.P1, brachistochroneFraction(tau));
@@ -294,11 +360,14 @@ export function customState(obj, jd, ctx) {
 }
 
 /**
- * Polylines for drawing a route: one per transfer leg, sampled uniformly in time.
- * Points are stored relative to `origin` (the leg's start point) to keep float32 precision on the GPU.
- * @returns {{leg:number, t0:number, t1:number, origin:number[], points:number[][], profile:string, fallback:boolean}[]}
+ * Polylines for drawing a route: one per transfer leg. Two-body and straight legs are sampled uniformly in time;
+ * N-body ballistic legs merge the integrator's own steps (dense near planetary encounters) into the uniform grid.
+ * Points are stored relative to `origin` (the leg's start point) to keep float32 precision on the GPU; `jds` holds
+ * the time of every point (for the past/future split).
+ * @returns {{leg:number, t0:number, t1:number, origin:number[], points:number[][], jds:number[], profile:string,
+ *   fallback:boolean, nbody:null|'pending'|'ok'|'failed'}[]}
  */
-export function customPath(obj, ctx, samples = 192) {
+export function customPath(obj, ctx, samples = 256) {
   const m = obj.motion;
   if (!m || m.kind !== 'route' || !m.stops || m.stops.length < 2) return [];
   const out = [];
@@ -306,12 +375,27 @@ export function customPath(obj, ctx, samples = 192) {
     const A = m.stops[i], B = m.stops[i + 1];
     if (A.departJd == null || B.arriveJd == null || !(B.arriveJd > A.departJd)) continue;
     const leg = legData(obj, i, ctx, 0);
-    const pts = [];
-    for (let k = 0; k <= samples; k++) {
-      const t = leg.t0 + (leg.T * k) / samples;
-      pts.push(vsub(legPosition(leg, t), leg.P0));
-    }
-    out.push({ leg: i, t0: leg.t0, t1: leg.t1, origin: leg.P0, points: pts, profile: m.profile, fallback: leg.fallback });
+    const nb = leg.profile === 'ballistic' && leg.ballistic ? legNbody(leg) : null;
+    const uniform = [];
+    for (let k = 0; k <= samples; k++) uniform.push(leg.t0 + (leg.T * k) / samples);
+    const jds = nb?.ok ? mergeTimes(uniform, nb.samples.map((s) => s.jd), leg.t0, leg.t1) : uniform;
+    const pts = jds.map((t) => vsub(legPosition(leg, t), leg.P0));
+    out.push({
+      leg: i, t0: leg.t0, t1: leg.t1, origin: leg.P0, points: pts, jds, profile: m.profile, fallback: leg.fallback,
+      nbody: leg.nbodyKey ? (nb ? (nb.ok ? 'ok' : 'failed') : 'pending') : null,
+    });
+  }
+  return out;
+}
+
+/** Merge two sorted time lists (clipped to [t0, t1]), dropping near-duplicates. */
+function mergeTimes(a, b, t0, t1) {
+  const out = [];
+  let i = 0, j = 0;
+  while (i < a.length || j < b.length) {
+    const t = j >= b.length || (i < a.length && a[i] <= b[j]) ? a[i++] : b[j++];
+    if (t < t0 || t > t1) continue;
+    if (!out.length || t - out[out.length - 1] > 1e-7) out.push(t);
   }
   return out;
 }
@@ -369,6 +453,15 @@ export function resolveRoute(draft, ctx, parseDateToJd) {
     const d = draft.stops[i];
     const label = `Stop ${i + 1}`;
     const stop = { ref: d.ref || null, arriveJd: null, departJd: null };
+    const flyby = !!d.flyby && i > 0 && i < n - 1;
+    if (flyby) stop.flyby = true;
+    // optional parking-orbit altitude (km) used for departure/capture delta-v at this stop
+    const parkRaw = d.parkAltStr !== undefined ? String(d.parkAltStr).trim() : (d.parkAltKm != null ? String(d.parkAltKm) : '');
+    if (parkRaw !== '') {
+      const alt = Number(parkRaw);
+      if (!Number.isFinite(alt) || alt < 0) errors.push(`${label}: parking altitude must be a non-negative number of km.`);
+      else stop.parkAltKm = alt;
+    }
     let valid = true;
     if (!stop.ref) {
       const x = Number(d.x), y = Number(d.y), z = Number(d.z);
@@ -394,8 +487,11 @@ export function resolveRoute(draft, ctx, parseDateToJd) {
       if (stop.arriveJd != null && prevTime != null && !(stop.arriveJd > prevTime)) errors.push(`${label}: arrival must be after the previous departure.`);
       if (stop.arriveJd != null) prevTime = stop.arriveJd;
     }
-    // departure
-    if (i < n - 1) {
+    // departure (a flyby departs the instant it arrives)
+    if (flyby) {
+      if (stop.arriveJd == null) errors.push(`${label}: a flyby needs an arrival time.`);
+      else stop.departJd = stop.arriveJd;
+    } else if (i < n - 1) {
       const p = d.departStr !== undefined ? parseStopTime(d.departStr, prevTime, parseDateToJd) : (d.departJd != null ? { jd: d.departJd } : { blank: true });
       if (p.error) errors.push(`${label} departure: ${p.error}.`);
       else if (p.blank) errors.push(`${label}: departure time required.`);
@@ -423,6 +519,7 @@ export function resolveRoute(draft, ctx, parseDateToJd) {
       if (draft.profile === 'ballistic' && leg.fallback) warnings.push(`Leg ${i + 1}: no ballistic solution; drawn as a straight line.`);
       if (draft.profile === 'ballistic' && leg.ballistic && leg.ballistic.e >= 1) warnings.push(`Leg ${i + 1}: hyperbolic transfer (e = ${leg.ballistic.e.toFixed(2)}); very fast for a ballistic coast.`);
     }
+    if (draft.profile !== 'ballistic' && stops.some((st) => st.flyby)) warnings.push('Flyby stops get a gravity-assist analysis only on ballistic routes; here they are zero-dwell waypoints.');
     for (let i = 0; i < n - 1; i++) legCache.delete(`${tmp.id}#${i}`);
   }
   return { stops, errors, warnings, legs };

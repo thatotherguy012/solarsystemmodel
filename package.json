@@ -9,7 +9,8 @@
     "build": "vite build",
     "build:standalone": "vite build --config vite.standalone.config.js",
     "preview": "vite preview",
-    "validate": "node scripts/validate-astro.mjs",
+    "validate": "node scripts/validate-astro.mjs && node scripts/validate-nbody.mjs",
+    "validate:nbody": "node scripts/validate-nbody.mjs",
     "fetch-data": "node scripts/fetch-data.mjs"
   },
   "dependencies": {

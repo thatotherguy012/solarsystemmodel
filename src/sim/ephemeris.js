@@ -1,9 +1,10 @@
 // Ephemeris engine for natural bodies: heliocentric ecliptic J2000 states (AU, AU/day) for any catalog id
 // at any JD, orbit elements/paths for drawing, and GM lookups. See DESIGN.md §4.
-import { GM_SUN, gmToAuDay, DEG } from '../astro/constants.js';
+import { GM_SUN, gmToAuDay, kmToAu, DEG } from '../astro/constants.js';
 import { vadd, vsub, vscale, vcross, vnorm } from '../astro/vec3.js';
 import { elementsToState, stateToElements, solveKeplerElliptic, perifocalToReference, orbitPath, meanMotion } from '../astro/kepler.js';
-import { planetState, planetElementsAt, earthState, moonGeocentric, equatorialToEcliptic } from '../astro/planets.js';
+import { planetState, planetElementsAt, earthState, moonGeocentric, equatorialToEcliptic, PLANET_ELEMENTS } from '../astro/planets.js';
+import { soiRadius } from '../astro/nbody.js';
 
 /** @type {Map<string, import('../data/catalog.js').BodyDescriptor>} */
 const bodies = new Map();
@@ -32,6 +33,7 @@ export function initEphemeris(list) {
   bodies.clear();
   children.clear();
   stateCache.clear();
+  perturbers = null;
   for (const b of list) bodies.set(b.id, b);
   for (const b of list) {
     if (b.parent && b.type === 'moon') {
@@ -235,4 +237,58 @@ export function equatorialPlane(id) {
 /** Clear all memoized states (e.g. after the catalog changes). */
 export function clearEphemerisCache() {
   stateCache.clear();
+}
+
+// ------------------------------------------------------------------ N-body perturbers
+
+/** The eight planet systems that perturb transfer trajectories: app body id -> Standish element key. */
+const PERTURBER_KEYS = [
+  ['mercury', 'mercury'], ['venus', 'venus'], ['earth', 'emb'], ['mars', 'mars'],
+  ['jupiter', 'jupiter'], ['saturn', 'saturn'], ['uranus', 'uranus'], ['neptune', 'neptune'],
+];
+/** Ids of the perturbing planet systems. */
+export const PERTURBER_IDS = new Set(PERTURBER_KEYS.map(([id]) => id));
+/** @type {Object[]|null} */
+let perturbers = null;
+
+/**
+ * Perturber set for src/astro/nbody.js (built once): the 8 planet systems with
+ * `{ id, gm (AU^3/day^2), radiusAu, soiAu, state(jd) -> {r, v} }` (heliocentric).
+ * Earth and the Moon act as one perturber with their combined GM at the Earth-Moon barycentre.
+ */
+export function getPerturbers() {
+  if (perturbers) return perturbers;
+  perturbers = PERTURBER_KEYS.map(([id, key]) => {
+    const b = bodies.get(id);
+    let gmKm = b.gmKm3S2;
+    if (id === 'earth') gmKm += bodies.get('moon')?.gmKm3S2 ?? 4902.8;
+    const gm = gmToAuDay(gmKm);
+    return { id, gm, radiusAu: kmToAu(b.radiusKm), soiAu: soiRadius(PLANET_ELEMENTS[key].el[0], gm), state: (jd) => planetState(key, jd) };
+  });
+  return perturbers;
+}
+
+/** The perturber record for a planet id, or undefined. */
+export const getPerturber = (id) => getPerturbers().find((p) => p.id === id);
+
+/**
+ * Map a route-stop reference to the perturber whose gravity is switched off near that endpoint
+ * (patched-conic endpoint exclusion): a planet -> itself; a moon -> its planet; a custom object whose motion is an
+ * orbit / co-location about X (or a Lagrange point of a pair, see below) -> X's perturber; small bodies, the Sun,
+ * fixed points and anything else -> null. A Lagrange point maps to its planet: the secondary for Sun-planet pairs,
+ * otherwise the primary (Earth-Moon L2 -> Earth).
+ * @param {string|null} ref
+ * @param {(id:string)=>Object|undefined} [lookupCustom] resolves custom-object ids (e.g. id => ctx.byId.get(id))
+ * @returns {string|null}
+ */
+export function perturberIdFor(ref, lookupCustom = null, depth = 0) {
+  if (!ref || depth > 4) return null;
+  if (PERTURBER_IDS.has(ref)) return ref;
+  const b = bodies.get(ref);
+  if (b) return b.type === 'moon' && PERTURBER_IDS.has(b.parent) ? b.parent : null;
+  const m = lookupCustom?.(ref)?.motion;
+  if (!m) return null;
+  if (m.kind === 'orbit' || m.kind === 'colocated') return perturberIdFor(m.parent, lookupCustom, depth + 1);
+  if (m.kind === 'lagrange') return perturberIdFor(m.primary === 'sun' ? m.secondary : m.primary, lookupCustom, depth + 1);
+  return null;
 }

@@ -41,20 +41,29 @@ export function planetElementsAt(key, jd) {
   return { a, e, i: I, om: wrapRad(ln), w: wrapRad(w), M: wrapRad(M), epoch: jd, n: 0 };
 }
 
-/** Heliocentric ecliptic J2000 state of planet (or 'emb') at JD. Returns { r (AU), v (AU/day) }. */
-export function planetState(key, jd) {
+/** Heliocentric ecliptic J2000 position (AU) of planet (or 'emb') at JD. */
+export function planetPosition(key, jd) {
   const el = planetElementsAt(key, jd);
   const { a, e, i, om, w, M } = el;
   const E = solveKeplerElliptic(M, e);
   const cE = Math.cos(E), sE = Math.sin(E);
-  const r = a * (1 - e * cE);
   const px = a * (cE - e), py = a * Math.sqrt(1 - e * e) * sE;
-  const k = Math.sqrt(GM_SUN * a) / r;
-  const vx = -k * sE, vy = k * Math.sqrt(1 - e * e) * cE;
-  return { r: perifocalToReference([px, py, 0], i, om, w), v: perifocalToReference([vx, vy, 0], i, om, w) };
+  return perifocalToReference([px, py, 0], i, om, w);
 }
 
-export function planetPosition(key, jd) { return planetState(key, jd).r; }
+const VEL_STEP_DAYS = 0.02;
+
+/**
+ * Heliocentric ecliptic J2000 state of planet (or 'emb') at JD. Returns { r (AU), v (AU/day) }.
+ * Velocity is a central finite difference of the position so that it includes the time-derivative of the
+ * secular element rates and the Jupiter-Neptune periodic terms (the pure two-body velocity is off by a few m/s).
+ */
+export function planetState(key, jd) {
+  const r = planetPosition(key, jd);
+  const rp = planetPosition(key, jd + VEL_STEP_DAYS), rm = planetPosition(key, jd - VEL_STEP_DAYS);
+  const k = 1 / (2 * VEL_STEP_DAYS);
+  return { r, v: [(rp[0] - rm[0]) * k, (rp[1] - rm[1]) * k, (rp[2] - rm[2]) * k] };
+}
 
 // ---------------- Moon (geocentric), truncated Meeus Ch. 47 series ----------------
 // Terms: [D, M, M', F, lonCoeff (1e-6 deg), distCoeff (1e-3 km)].
